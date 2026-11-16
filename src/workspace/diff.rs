@@ -538,7 +538,9 @@ impl Workspace {
                                             };
                                             let span_ok = (a..=b).all(|r| matches!(d.rows[r], (f2, Some(_)) if f2 == f && row_target(&d, r).is_some()));
                                             let (a, b) = if span_ok { (a, b) } else { (i, i) };
-                                            if (a, b) == (i, i) {
+                                            // With nothing selected before, a thread's block has no anchor
+                                            // of its own; use this row, not what a closed selection left.
+                                            if (a, b) == (i, i) || t.line_target.is_none() {
                                                 t.line_anchor = i;
                                             }
                                             t.line_rows = (a, b);
