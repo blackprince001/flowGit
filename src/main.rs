@@ -40,6 +40,11 @@ fn main() {
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-shift-n", NewPullRequest, None),
             KeyBinding::new("cmd-shift-enter", FinishReview, None),
+            // Plain letters: only inside a diff, and never while a text input has focus.
+            KeyBinding::new("j", NextFile, Some("DiffNav && !Input")),
+            KeyBinding::new("k", PreviousFile, Some("DiffNav && !Input")),
+            KeyBinding::new("n", NextHunk, Some("DiffNav && !Input")),
+            KeyBinding::new("p", PreviousHunk, Some("DiffNav && !Input")),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());

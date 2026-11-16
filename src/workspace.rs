@@ -34,6 +34,7 @@ mod review;
 mod ui;
 
 pub use compare::NewPullRequest;
+pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
 pub use review::FinishReview;
 
 actions!(
