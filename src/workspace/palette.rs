@@ -15,6 +15,7 @@ type Run = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 fn commands() -> Vec<(&'static str, &'static str, Run)> {
     vec![
         ("Go to Inbox", "", |s, w, cx| s.show_home_page(super::home::HomePage::Inbox, w, cx)),
+        ("Go to my pull requests", "", |s, w, cx| s.show_home_page(super::home::HomePage::Mine, w, cx)),
         ("Go to assigned issues", "", |s, w, cx| s.show_home_page(super::home::HomePage::Issues, w, cx)),
         ("Go to Notifications", "", |s, w, cx| s.show_home_page(super::home::HomePage::Notifications, w, cx)),
         ("Find file…", "⌘P", |s, w, cx| s.find_file(&FindFile, w, cx)),

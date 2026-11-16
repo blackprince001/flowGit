@@ -112,14 +112,16 @@ fn reason_label(reason: &str) -> &'static str {
 pub enum HomePage {
     #[default]
     Inbox,
+    Mine,
     Issues,
     Notifications,
 }
 impl HomePage {
-    pub const ALL: [HomePage; 3] = [HomePage::Inbox, HomePage::Issues, HomePage::Notifications];
+    pub const ALL: [HomePage; 4] = [HomePage::Inbox, HomePage::Mine, HomePage::Issues, HomePage::Notifications];
     pub fn title(self) -> &'static str {
         match self {
             HomePage::Inbox => "Inbox",
+            HomePage::Mine => "My PRs",
             HomePage::Issues => "Assigned",
             HomePage::Notifications => "Notifications",
         }
@@ -127,6 +129,7 @@ impl HomePage {
     pub fn icon(self) -> Icon {
         match self {
             HomePage::Inbox => IconName::Inbox.into(),
+            HomePage::Mine => Glyph::PullRequest.into(),
             HomePage::Issues => Glyph::CircleDot.into(),
             HomePage::Notifications => IconName::Bell.into(),
         }
@@ -149,6 +152,7 @@ impl Workspace {
         let len = |l: &Load<Vec<InboxItem>>| l.data.as_ref().map_or(0, Vec::len);
         match page {
             HomePage::Inbox => len(&self.home.review_requests),
+            HomePage::Mine => len(&self.home.my_prs),
             HomePage::Issues => len(&self.home.assigned_issues),
             HomePage::Notifications => self.unread_count(),
         }
@@ -349,8 +353,8 @@ impl Workspace {
                 None,
                 Self::inbox_row,
                 cx,
-            ))
-                .child(self.home_section(
+            )),
+            HomePage::Mine => col().child(self.home_section(
                 "Your pull requests",
                 &self.home.my_prs,
                 "Loading pull requests…",
