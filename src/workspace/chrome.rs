@@ -50,7 +50,7 @@ impl Workspace {
                     .gap(px(6.))
                     .text_size(px(13.))
                     .child(icon(Glyph::Graph).text_color(rgb(colors.blue)))
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Gitflow"))
+                    .child(div().font_weight(FontWeight::MEDIUM).child("flowGit"))
                     .when_some(repo, |s, r| {
                         s.child(div().text_color(rgb(colors.quiet)).child("/"))
                             .child(div().text_color(rgb(colors.muted)).child(r.owner.clone()))

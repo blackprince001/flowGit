@@ -61,7 +61,7 @@ fn http_get(url: &str) -> Option<Vec<u8>> {
     static TOKEN: OnceLock<Option<String>> = OnceLock::new();
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent("gitflow-desktop")
+        .user_agent("flowgit-desktop")
         .build()
         .ok()?;
     let mut req = client.get(url);
@@ -95,7 +95,7 @@ impl Avatars {
             let url = format!("https://avatars.githubusercontent.com/{login}?s=80");
             let image = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .user_agent("gitflow-desktop")
+                .user_agent("flowgit-desktop")
                 .build()
                 .and_then(|c| c.get(url).send())
                 .and_then(|r| r.error_for_status())

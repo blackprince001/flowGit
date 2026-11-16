@@ -2,12 +2,12 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-source_app="$repo_root/build/Gitflow.app"
+source_app="$repo_root/build/flowGit.app"
 install_dir="${GITFLOW_INSTALL_DIR:-/Applications}"
-destination="$install_dir/Gitflow.app"
+destination="$install_dir/flowGit.app"
 
 if [ "$(uname -s)" != "Darwin" ]; then
-  printf 'Gitflow can only be installed as an app on macOS.\n' >&2
+  printf 'flowGit can only be installed as an app on macOS.\n' >&2
   exit 1
 fi
 

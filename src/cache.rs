@@ -1,6 +1,6 @@
 //! A disk cache of `gh` read output, so a restart shows the last known state at
 //! once while the live request runs. Entries are raw `gh` stdout under
-//! `~/Library/Caches/Gitflow`, one folder per signed-in account, keyed by the
+//! `~/Library/Caches/flowGit`, one folder per signed-in account, keyed by the
 //! command's arguments. Only reads are cached; writes never touch it.
 use std::{
     cell::Cell,
@@ -115,7 +115,7 @@ fn account() -> String {
 }
 static DIR: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     let home = std::env::var_os("HOME")?;
-    let dir = PathBuf::from(home).join("Library/Caches/Gitflow").join(VERSION).join(account());
+    let dir = PathBuf::from(home).join("Library/Caches/flowGit").join(VERSION).join(account());
     fs::create_dir_all(&dir).ok()?;
     Some(dir)
 });

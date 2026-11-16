@@ -1,6 +1,6 @@
 # Conventions
 
-How code in Gitflow is shaped. Read this before adding a feature. If something here is wrong for your case, change this file in the same commit and say why.
+How code in flowGit is shaped. Read this before adding a feature. If something here is wrong for your case, change this file in the same commit and say why.
 
 ## Where things go
 

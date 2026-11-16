@@ -14,14 +14,15 @@ use gpui_component::{Root, TitleBar};
 use workspace::*;
 
 fn main() {
-    // `gitflow mcp`: bridge an agent's stdio to the running app, no window.
+    // `flowgit mcp`: bridge an agent's stdio to the running app, no window.
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         if let Err(e) = mcp::serve_stdio() {
-            eprintln!("gitflow mcp: {e:#}");
+            eprintln!("flowgit mcp: {e:#}");
             std::process::exit(1);
         }
         return;
     }
+    settings::migrate_from_gitflow();
     // Trim the disk cache off the main thread.
     std::thread::spawn(cache::prune);
     Application::new().with_assets(icons::Assets).run(move |cx| {
@@ -71,11 +72,11 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![
             Menu {
-                name: "Gitflow".into(),
+                name: "flowGit".into(),
                 items: vec![
                     MenuItem::action("Preferences…", OpenPreferences),
                     MenuItem::separator(),
-                    MenuItem::action("Quit Gitflow", Quit),
+                    MenuItem::action("Quit flowGit", Quit),
                 ],
             },
             Menu {
@@ -116,14 +117,14 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                window.set_window_title("Gitflow");
+                window.set_window_title("flowGit");
                 theme::sync(window, cx);
                 window.observe_window_appearance(theme::sync).detach();
                 let view = cx.new(|cx| Workspace::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
-        .expect("Could not open Gitflow window");
+        .expect("Could not open flowGit window");
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();

@@ -305,7 +305,7 @@ impl Workspace {
                 &match self.user.error() {
                     Some(e) => e.to_string(),
                     None => format!(
-                        "Gitflow uses your gh login and never stores a token. gh {}.",
+                        "flowGit uses your gh login and never stores a token. gh {}.",
                         self.gh_version.data.clone().unwrap_or_default()
                     ),
                 },

@@ -48,7 +48,7 @@ impl Workspace {
                 let answer = this
                     .update_in(cx, |s, w, cx| s.mcp_call(call, w, cx))
                     .unwrap_or(Reply::Error {
-                        message: "Gitflow is closing.".into(),
+                        message: "flowGit is closing.".into(),
                     });
                 let _ = reply.send(answer).await;
             }
@@ -151,7 +151,7 @@ impl Workspace {
             .iter()
             .find(|r| r.slug().eq_ignore_ascii_case(slug))
             .map(Repo::key)
-            .ok_or_else(|| format!("{slug} isn't in the Gitflow sidebar. Ask the user to add it."))
+            .ok_or_else(|| format!("{slug} isn't in the flowGit sidebar. Ask the user to add it."))
     }
 
     fn mcp_draft(&mut self, a: DraftArgs, cx: &mut Context<Self>) -> Result<String, String> {
@@ -210,7 +210,7 @@ impl Workspace {
         cx.notify();
         let pending = self.drafts.count(&key, n);
         Ok(format!(
-            "Drafted a comment on {}:{} in #{n}. {pending} pending; the user reviews and submits them in Gitflow.",
+            "Drafted a comment on {}:{} in #{n}. {pending} pending; the user reviews and submits them in flowGit.",
             a.path, a.line
         ))
     }
@@ -227,7 +227,7 @@ impl Workspace {
             None => None,
         };
         if view.is_some_and(|v| !v.available(self.is_local(&key))) {
-            return Err(format!("{} has no local clone in Gitflow, so it has no Changes view.", a.repo));
+            return Err(format!("{} has no local clone in flowGit, so it has no Changes view.", a.repo));
         }
         self.open_repo(&key, window, cx);
         if let Some(view) = view {

@@ -1,4 +1,11 @@
-# Gitflow
+# flowGit
+
+<img src="assets/AppIcon.png" width="96" alt="flowGit icon">
+
+A fork of [blackmann/gitflow](https://github.com/blackmann/gitflow), grown into a daily driver: an inbox across repos, notifications, issues, creating and batch-reviewing PRs, code search, local commits, and an MCP server so Claude Code can see what you have open.
+
+The original README follows.
+
 
 Github web is just too slow and I don't like it. This project is almost totally vibecoded but with a lot of taste and thoughtfulness.
 
@@ -6,7 +13,7 @@ Requires Github CLI to be installed and logged in.
 
 Designed mainly to cover most of my workflow. If you can't find what you want, please clone and vibecode the additional features.
 
-Run `cargo run` for dev run. To install on your Mac, `./scripts/install-app.sh`
+Run `cargo run` for dev run. To install on your Mac, `./scripts/install-app.sh` (it builds `flowGit.app` into `/Applications`). The icon is drawn by `scripts/make-icon.py`.
 
 ![Screenshot](./screenshot.png)
 
@@ -19,10 +26,10 @@ Run `cargo run` for dev run. To install on your Mac, `./scripts/install-app.sh`
 
 ## Using it from Claude Code
 
-Gitflow runs a small MCP server so an agent can see what you have open and point the app somewhere. Register it once:
+flowGit runs a small MCP server so an agent can see what you have open and point the app somewhere. Register it once:
 
 ```sh
-claude mcp add gitflow -- /Applications/Gitflow.app/Contents/MacOS/gitflow mcp
+claude mcp add flowgit -- /Applications/flowGit.app/Contents/MacOS/flowgit mcp
 ```
 
 The app has to be running. The tools can read what's on screen, open a repo, PR or file, and add draft review comments. Drafts show up in your pending review and nothing is posted until you submit it yourself.

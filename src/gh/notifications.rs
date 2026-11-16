@@ -26,7 +26,7 @@ pub struct Notification {
     pub repository: NotificationRepo,
 }
 
-/// What a notification points at, as far as Gitflow can open it.
+/// What a notification points at, as far as flowGit can open it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Pull(u64),

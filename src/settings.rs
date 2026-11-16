@@ -146,7 +146,28 @@ pub fn support_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Application Support/Gitflow"))
+    Some(PathBuf::from(home).join("Library/Application Support/flowGit"))
+}
+
+/// Bring repositories, tabs and settings over from the folder this app used
+/// before it was renamed from Gitflow. Runs once: only when the new folder
+/// doesn't exist yet. The old folder is left as it was.
+pub fn migrate_from_gitflow() {
+    if std::env::var_os("GITFLOW_SUPPORT_DIR").is_some() {
+        return;
+    }
+    let (Some(new), Some(home)) = (support_dir(), std::env::var_os("HOME")) else { return };
+    let old = PathBuf::from(home).join("Library/Application Support/Gitflow");
+    if new.exists() || !old.is_dir() || std::fs::create_dir_all(&new).is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&old) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().is_some_and(|x| x == "json") {
+            let _ = std::fs::copy(&path, new.join(e.file_name()));
+        }
+    }
 }
 
 pub fn write(name: &str, bytes: Vec<u8>) -> Result<()> {
