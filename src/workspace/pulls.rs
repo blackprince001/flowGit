@@ -247,7 +247,7 @@ impl Workspace {
             .on_click(cx.listener(move |s, _, _, cx| {
                 if let Some(t) = s.current_mut() {
                     t.pr = Some(n);
-                    t.line_target = None;
+                    t.selection = None;
                     t.pr_page = PrPage::Conversation;
                 }
                 cx.notify();
@@ -392,7 +392,7 @@ impl Workspace {
                     .on_click(cx.listener(|s, _, _, cx| {
                         if let Some(t) = s.current_mut() {
                             t.pr = None;
-                            t.line_target = None;
+                            t.selection = None;
                         }
                         cx.notify();
                     })),
@@ -687,10 +687,10 @@ impl Workspace {
                                         ("pr-diff", t.id),
                                         diff,
                                         t.diff_scroll.clone(),
-                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n)).with_viewed(viewed)),
+                                        Some(super::diff::Review::new(&pr.threads, t.selection.as_ref().map(|s| s.rows)).with_drafts(self.drafts.per_line(&t.repo, n)).with_viewed(viewed)),
                                         cx,
                                     )))
-                                    .when_some(t.line_target.clone(), |c, target| c.child(self.line_panel(n, pr, target, window, cx))),
+                                    .when_some(t.selection.clone(), |c, sel| c.child(self.line_panel(n, pr, sel, window, cx))),
                             ),
                         )
                         .into_any_element()
@@ -712,13 +712,14 @@ impl Workspace {
 
     /// The comment box under a pull request diff: the line's existing threads,
     /// then a composer that starts a thread or replies to the last one.
-    fn line_panel(&self, n: u64, pr: &gh::PullDetail, target: LineTarget, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn line_panel(&self, n: u64, pr: &gh::PullDetail, sel: LineSelection, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let colors = palette(cx);
         let mono = settings::mono(cx);
         let Some(t) = self.current() else { return div() };
+        let target = sel.end;
         let threads: Vec<&gh::Thread> = pr.threads.iter().filter(|th| super::diff::thread_target(th).as_ref() == Some(&target)).collect();
         let side = if target.right { "" } else { " (removed)" };
-        let lines = match &t.line_start {
+        let lines = match &sel.start {
             Some(start) if start.right == target.right => format!("{}–{}", start.line, target.line),
             Some(start) => format!("{}{}–{}", start.line, if start.right { "" } else { " (removed)" }, target.line),
             None => target.line.to_string(),
@@ -732,7 +733,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(icon_button("close-line-comment", IconName::Close, "Close").on_click(cx.listener(|s, _, _, cx| {
                 if let Some(t) = s.current_mut() {
-                    t.line_target = None;
+                    t.selection = None;
                 }
                 cx.notify();
             })));
@@ -818,7 +819,7 @@ impl Workspace {
                     )
                     .child(Button::new("cancel-line-comment").label("Cancel").ghost().small().on_click(cx.listener(|s, _, _, cx| {
                         if let Some(t) = s.current_mut() {
-                            t.line_target = None;
+                            t.selection = None;
                         }
                         cx.notify();
                     })))

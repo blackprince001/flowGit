@@ -291,7 +291,8 @@ impl Workspace {
     /// Put a suggestion block with the selected lines into the line comment box.
     pub(super) fn insert_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
-        let lines = new_side_lines(&diff, t.line_rows);
+        let Some(sel) = &t.selection else { return };
+        let lines = new_side_lines(&diff, sel.rows);
         if lines.is_empty() {
             return;
         }
@@ -527,25 +528,10 @@ impl Workspace {
                                         if let Some(t) = s.current_mut() {
                                             // Shift-click extends from the first line clicked, as on GitHub,
                                             // within one file and one hunk.
-                                            let anchor = t.line_target.as_ref().map(|_| t.line_anchor);
-                                            let (a, b) = match anchor {
-                                                Some(a) if e.modifiers().shift && a != i => (a.min(i), a.max(i)),
-                                                // Opening a multi-line thread selects the block it covers.
-                                                _ => match thread_from {
-                                                    Some(from) => (from, i),
-                                                    None => (i, i),
-                                                },
+                                            let line_at = |r: usize| {
+                                                matches!(d.rows[r], (f2, Some(_)) if f2 == f).then(|| row_target(&d, r)).flatten()
                                             };
-                                            let span_ok = (a..=b).all(|r| matches!(d.rows[r], (f2, Some(_)) if f2 == f && row_target(&d, r).is_some()));
-                                            let (a, b) = if span_ok { (a, b) } else { (i, i) };
-                                            // With nothing selected before, a thread's block has no anchor
-                                            // of its own; use this row, not what a closed selection left.
-                                            if (a, b) == (i, i) || t.line_target.is_none() {
-                                                t.line_anchor = i;
-                                            }
-                                            t.line_rows = (a, b);
-                                            t.line_start = (a != b).then(|| row_target(&d, a)).flatten();
-                                            t.line_target = row_target(&d, b).or(Some(target.clone()));
+                                            t.selection = Some(LineSelection::click(t.selection.as_ref(), i, target.clone(), e.modifiers().shift, thread_from, line_at));
                                             let input = t.line_composer.clone();
                                             input.update(cx, |i, cx| i.focus(window, cx));
                                         }

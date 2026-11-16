@@ -101,8 +101,7 @@ impl Tab {
     /// The diff's rows moved (a file collapsed or opened), so row numbers kept
     /// for the comment box and keyboard stepping no longer point at the same lines.
     fn rows_changed(&mut self) {
-        self.line_target = None;
-        self.line_start = None;
+        self.selection = None;
         self.diff_nav = None;
     }
 }

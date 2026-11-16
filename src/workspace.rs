@@ -35,12 +35,14 @@ mod pulls;
 mod releases;
 mod review;
 mod search;
+mod selection;
 mod timeline;
 mod viewed;
 mod ui;
 
 pub use compare::NewPullRequest;
 pub use load::Load;
+pub use selection::LineSelection;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
 use diff::NavPos;
 pub use pulls::{ApprovePull, CheckoutPull, MergePull};
@@ -334,13 +336,8 @@ pub struct Tab {
     /// The issue page's comment box, separate from the pull request's.
     pub issue_composer: Entity<InputState>,
     pub commit_message: Entity<InputState>,
-    /// The pull request diff line being commented on, and its comment box.
-    pub line_target: Option<LineTarget>,
-    /// The first line when a range is selected (`line_target` is the last).
-    pub line_start: Option<LineTarget>,
-    /// The selected diff rows, and the row a shift-click extends from.
-    pub line_rows: (usize, usize),
-    pub line_anchor: usize,
+    /// The pull request diff lines being commented on, and the comment box for them.
+    pub selection: Option<LineSelection>,
     pub line_composer: Entity<InputState>,
     pub list_scroll: UniformListScrollHandle,
     pub diff_scroll: UniformListScrollHandle,
@@ -703,10 +700,7 @@ impl Workspace {
             composer,
             issue_composer,
             commit_message,
-            line_target: None,
-            line_start: None,
-            line_rows: (0, 0),
-            line_anchor: 0,
+            selection: None,
             line_composer,
             list_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
@@ -1720,7 +1714,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             View::Commits => t.commit = None,
             View::Issues => t.issue = None,
             View::Pulls if t.new_pr.is_open() => t.new_pr = compare::NewPr::Closed,
-            View::Pulls => (t.pr, t.line_target) = (None, None),
+            View::Pulls => (t.pr, t.selection) = (None, None),
             View::Actions if t.log_open => t.log_open = false,
             View::Actions => t.run = None,
             _ => {}
@@ -1745,7 +1739,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             self.commit_staged(cx);
             return;
         }
-        if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.line_target.is_some()) {
+        if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.selection.is_some()) {
             self.submit_line(n, cx);
             return;
         }
@@ -1769,7 +1763,7 @@ impl Workspace {
     /// Post the line comment box: a reply when the line already has a thread.
     fn submit_line(&mut self, n: u64, cx: &mut Context<Self>) {
         let Some(t) = self.current() else { return };
-        let Some(target) = t.line_target.clone() else { return };
+        let Some(target) = t.selection.as_ref().map(|s| s.end.clone()) else { return };
         let body = t.line_composer.read(cx).value().trim().to_string();
         if body.is_empty() {
             return;
@@ -1787,7 +1781,7 @@ impl Workspace {
             Some(th) => gh::PrAction::Reply { to: th.root.id, body },
             None => gh::PrAction::LineComment {
                 commit: pr.head_ref_oid.clone(),
-                start: t.line_start.as_ref().map(|s| (s.line, s.right)),
+                start: t.selection.as_ref().and_then(|s| s.start.as_ref()).map(|s| (s.line, s.right)),
                 path: target.path,
                 line: target.line,
                 right: target.right,

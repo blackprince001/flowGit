@@ -38,8 +38,6 @@ The rule: **a value that can only be in one of N states is one enum, not N flags
 - **Polling** hooks into `Workspace::tick` with its own interval check. Don't start new timers.
 - **Never use a sentinel value** to mean something else, like an empty repo key for "not a repo".
 
-Some older code doesn't follow these yet (the five PR line-selection fields on `Tab`). Leave it alone unless your task is to fix it.
-
 ## Checks before you finish
 
 ```sh

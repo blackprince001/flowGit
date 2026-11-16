@@ -268,7 +268,7 @@ impl Workspace {
             Target::Pull(n) => {
                 t.view = View::Pulls;
                 t.pr = Some(n);
-                t.line_target = None;
+                t.selection = None;
                 t.pr_page = PrPage::Conversation;
             }
             Target::Issue(n) => {

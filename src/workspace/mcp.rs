@@ -100,8 +100,9 @@ impl Workspace {
                         .and_then(|d| d.pull.get(&n))
                         .and_then(|l| l.data.as_ref())
                         .map(|p| p.summary.title.clone());
-                    let selection = t.line_target.as_ref().map(|end| {
-                        let start = t.line_start.as_ref().filter(|s| s.path == end.path).unwrap_or(end);
+                    let selection = t.selection.as_ref().map(|sel| {
+                        let end = &sel.end;
+                        let start = sel.start.as_ref().filter(|s| s.path == end.path).unwrap_or(end);
                         json!({
                             "path": end.path,
                             "start_line": start.line,

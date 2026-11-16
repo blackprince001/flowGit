@@ -144,7 +144,7 @@ impl Workspace {
         if let Some(t) = self.current_mut() {
             t.view = View::Pulls;
             t.pr = None;
-            t.line_target = None;
+            t.selection = None;
             t.new_pr = NewPr::open(base, head);
         }
         title.update(cx, |s, cx| s.set_value("", window, cx));
@@ -234,7 +234,7 @@ impl Workspace {
                     t.new_pr = NewPr::Closed;
                     t.pr = Some(n);
                     t.pr_page = PrPage::Conversation;
-                    t.line_target = None;
+                    t.selection = None;
                 }
                 s.ensure(false, cx);
             },

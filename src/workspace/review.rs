@@ -102,13 +102,13 @@ impl Workspace {
     /// Keep the comment box's text as a pending line comment.
     pub(super) fn add_draft_line(&mut self, n: u64, cx: &mut Context<Self>) {
         let Some(t) = self.current() else { return };
-        let Some(target) = t.line_target.clone() else { return };
+        let Some(target) = t.selection.as_ref().map(|s| s.end.clone()) else { return };
         let body = t.line_composer.read(cx).value().trim().to_string();
         if body.is_empty() {
             return;
         }
         let comment = gh::DraftComment {
-            start: t.line_start.as_ref().map(|s| (s.line, s.right)),
+            start: t.selection.as_ref().and_then(|s| s.start.as_ref()).map(|s| (s.line, s.right)),
             path: target.path,
             line: target.line,
             right: target.right,
@@ -185,7 +185,7 @@ impl Workspace {
                     d.pulls.clear();
                 }
                 if let Some(t) = s.tabs.iter_mut().find(|t| Some(t.id) == tab) {
-                    t.line_target = None;
+                    t.selection = None;
                 }
                 s.ensure(false, cx);
             },

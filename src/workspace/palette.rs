@@ -155,7 +155,7 @@ impl Workspace {
         if let Some(t) = self.current_mut() {
             t.view = View::Pulls;
             t.pr = Some(n);
-            t.line_target = None;
+            t.selection = None;
             t.pr_page = PrPage::Conversation;
         }
         cx.notify();
