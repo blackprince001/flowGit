@@ -109,6 +109,8 @@ pub struct Settings {
     pub avatars: bool,
     /// An explicit `gh` executable; empty means search the usual install locations.
     pub gh_path: String,
+    /// Send a macOS notification for new review requests and CI activity.
+    pub desktop_alerts: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -125,6 +127,7 @@ impl Default for Settings {
             relative_dates: true,
             avatars: true,
             gh_path: String::new(),
+            desktop_alerts: true,
         }
     }
 }
@@ -257,6 +260,7 @@ mod tests {
         assert_eq!(s.commit_limit, 500);
         assert_eq!(s.mono_font, "Menlo");
         assert_eq!(s.merge_method, MergeMethod::Squash);
+        assert!(s.desktop_alerts);
         let old: Settings = serde_json::from_str(r#"{"refresh_secs": 0}"#).unwrap();
         let old = old.sanitized();
         assert!(!old.auto_refresh);

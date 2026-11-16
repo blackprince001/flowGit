@@ -43,6 +43,7 @@ actions!(
         NextTab,
         PreviousTab,
         OpenPreferences,
+        ShowHome,
         AddLocal,
         AddUrl,
         ShowCode,
@@ -374,6 +375,7 @@ pub struct Workspace {
     repos: Vec<Repo>,
     data: HashMap<String, RepoData>,
     tabs: Vec<Tab>,
+    /// The tab being shown. None means Home, the screen that is not a repository.
     active: Option<usize>,
     next_id: u64,
     sidebar: bool,
@@ -394,6 +396,12 @@ pub struct Workspace {
     pending_clear: Option<u64>,
     /// Likewise for a tab's line comment box.
     pending_line_clear: Option<u64>,
+    /// The Home screen's inbox and notifications. Not per repository.
+    home: home::HomeData,
+    /// Notifications already seen, so only new ones raise a desktop alert.
+    seen: home::Seen,
+    /// When notifications were last polled; None polls now.
+    last_notif_poll: Option<Instant>,
     user: Load<gh::User>,
     gh_version: Load<String>,
     prefs_page: PrefsPage,
@@ -467,6 +475,9 @@ impl Workspace {
             busy: None,
             pending_line_clear: None,
             pending_clear: None,
+            home: home::HomeData::default(),
+            seen: home::Seen::default(),
+            last_notif_poll: None,
             user: Load::default(),
             gh_version: Load::default(),
             prefs_page: PrefsPage::General,
@@ -785,7 +796,10 @@ impl Workspace {
     }
     fn ensure(&mut self, force: bool, cx: &mut Context<Self>) {
         self.trim_memory();
-        let Some(t) = self.current() else { return };
+        let Some(t) = self.current() else {
+            self.ensure_home(force, cx);
+            return;
+        };
         let key = t.repo.clone();
         let Some(repo) = self.repo(&key).cloned() else {
             return;
@@ -1070,7 +1084,11 @@ impl Workspace {
             }
             self.tabs.push(tab);
         }
-        self.active = active.or((!self.tabs.is_empty()).then_some(0));
+        // Home was showing when it was saved (no active tab, but tabs exist).
+        self.active = match saved.active {
+            None => None,
+            Some(_) => active.or((!self.tabs.is_empty()).then_some(0)),
+        };
         self.session = Some(self.session_now());
     }
     fn session_now(&self) -> Session {
@@ -1094,6 +1112,9 @@ impl Workspace {
         }
         if self.overlay == Overlay::Prefs {
             return;
+        }
+        if self.last_notif_poll.is_none_or(|t| t.elapsed() > home::NOTIFICATION_POLL) {
+            self.poll_notifications(cx);
         }
         let (on, every) = (settings::get(cx).auto_refresh, settings::get(cx).refresh_secs);
         let interval = Duration::from_secs(every as u64);

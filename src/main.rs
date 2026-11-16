@@ -41,6 +41,7 @@ fn main() {
             KeyBinding::new("cmd-,", OpenPreferences, None),
             KeyBinding::new("cmd-o", AddLocal, None),
             KeyBinding::new("cmd-shift-o", AddUrl, None),
+            KeyBinding::new("cmd-0", ShowHome, None),
             KeyBinding::new("cmd-1", ShowCode, None),
             KeyBinding::new("cmd-2", ShowCommits, None),
             KeyBinding::new("cmd-3", ShowIssues, None),
@@ -77,6 +78,8 @@ fn main() {
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Home", ShowHome),
+                    MenuItem::separator(),
                     MenuItem::action("Code", ShowCode),
                     MenuItem::action("Commits", ShowCommits),
                     MenuItem::action("Issues", ShowIssues),
