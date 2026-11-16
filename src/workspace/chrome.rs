@@ -285,6 +285,23 @@ impl Workspace {
         } else if shown.is_empty() {
             list = list.child(div().p_3().text_color(rgb(colors.muted)).child("No matches"));
         }
+        let at_home = self.active.is_none();
+        let unread = self.unread_count();
+        let home = row()
+            .id("home-entry")
+            .h(px(30.))
+            .mx_1()
+            .px_2()
+            .gap_2()
+            .rounded(px(5.))
+            .cursor_pointer()
+            .when(at_home, |s| s.bg(rgb(colors.selected)))
+            .when(!at_home, |s| s.hover(|s| s.bg(rgb(colors.hover))))
+            .child(icon(IconName::Inbox).text_color(rgb(if at_home { colors.blue } else { colors.muted })))
+            .child(div().flex_1().child("Home"))
+            .when(unread > 0, |s| s.child(count_badge(colors, unread)))
+            .tooltip(|w, cx| Tooltip::new("Home · ⌘ 0").build(w, cx))
+            .on_click(cx.listener(|s, _, w, cx| s.show_home(&ShowHome, w, cx)));
         let user = self.user.data.as_ref();
         let account = match (&self.user, user) {
             (_, Some(u)) => u.login.clone(),
@@ -296,6 +313,14 @@ impl Workspace {
             .bg(rgb(colors.chrome))
             .border_r_1()
             .border_color(rgb(colors.border))
+            .child(
+                col()
+                    .flex_shrink_0()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(rgb(colors.border))
+                    .child(home),
+            )
             .child(
                 row()
                     .h(px(BAR))
@@ -1112,91 +1137,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn welcome(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = palette(cx);
-        let action = |id: &'static str, glyph: Icon, title: &'static str, keys: Option<&str>| {
-            row()
-                .id(id)
-                .h(px(32.))
-                .px_2()
-                .gap_2()
-                .rounded(px(5.))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(colors.hover)))
-                .child(glyph.size(px(15.)).text_color(rgb(colors.muted)))
-                .child(div().flex_1().child(title))
-                .when_some(keys, |s, k| s.child(kbd(k)))
-        };
-        let signed_out = self.user.error.clone();
-        col()
-            .size_full()
-            .justify_center()
-            .items_center()
-            .bg(rgb(colors.background))
-            .child(
-                col()
-                    .w(px(420.))
-                    .gap_5()
-                    .child(
-                        row()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .size(px(40.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(9.))
-                                    .bg(rgb(colors.blue_tint))
-                                    .child(icon(Glyph::Graph).size(px(22.)).text_color(rgb(colors.blue))),
-                            )
-                            .child(
-                                col()
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Gitflow"))
-                                    .child(label(colors, "A GitHub workspace on the gh CLI")),
-                            ),
-                    )
-                    .child(div().text_color(rgb(colors.muted)).line_height(relative(1.55)).child(
-                        if self.repos.is_empty() {
-                            "Add a repository to browse its code, follow the commit graph, review pull requests and run workflows."
-                        } else {
-                            "Pick a repository from the sidebar. ⌘-click opens another tab; each tab keeps its own view and selection."
-                        },
-                    ))
-                    .when_some(signed_out, |s, e| {
-                        s.child(
-                            row()
-                                .gap_2()
-                                .items_start()
-                                .p_3()
-                                .rounded(px(8.))
-                                .bg(rgb(colors.amber_tint))
-                                .child(icon(IconName::TriangleAlert).text_color(rgb(colors.amber)))
-                                .child(div().flex_1().text_size(px(13.)).line_height(relative(1.45)).child(e)),
-                        )
-                    })
-                    .child(
-                        col()
-                            .gap(px(2.))
-                            .child(label(colors, "Get started").px_2().pb_1())
-                            .child(
-                                action("welcome-local", Glyph::FolderGit.into(), "Add local repository…", Some("cmd-o"))
-                                    .on_click(cx.listener(|s, _, w, cx| s.add_local(&AddLocal, w, cx))),
-                            )
-                            .child(
-                                action("welcome-url", Glyph::Link.into(), "Add from GitHub URL…", Some("cmd-shift-o"))
-                                    .on_click(cx.listener(|s, _, w, cx| s.open_add_url(&AddUrl, w, cx))),
-                            )
-                            .child(
-                                action("welcome-prefs", IconName::Settings.into(), "Preferences", Some("cmd-,"))
-                                    .on_click(cx.listener(|s, _, w, cx| s.open_prefs(&OpenPreferences, w, cx))),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
-
     fn add_url_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         div()
@@ -1380,7 +1320,12 @@ impl Render for Workspace {
                 .child(div().flex_1().min_h_0().child(body))
                 .into_any_element()
         } else {
-            self.welcome(cx)
+            col()
+                .size_full()
+                .min_w_0()
+                .child(self.tabs_view(cx))
+                .child(div().flex_1().min_h_0().child(self.home_view(cx)))
+                .into_any_element()
         };
         let main = if self.sidebar {
             h_resizable("sidebar-panels")
@@ -1412,6 +1357,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|s, _: &NextTab, _, cx| s.cycle(1, cx)))
             .on_action(cx.listener(|s, _: &PreviousTab, _, cx| s.cycle(-1, cx)))
             .on_action(cx.listener(Self::open_prefs))
+            .on_action(cx.listener(Self::show_home))
             .on_action(cx.listener(Self::add_local))
             .on_action(cx.listener(Self::open_add_url))
             .on_action(cx.listener(Self::submit))

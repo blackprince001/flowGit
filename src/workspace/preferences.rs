@@ -16,7 +16,7 @@ use gpui_component::{
     switch::Switch,
 };
 
-const GENERAL_WORDS: &str = "general default view tab open commits graph limit history refresh auto poll interval dates relative";
+const GENERAL_WORDS: &str = "general default view tab open commits graph limit history refresh auto poll interval dates relative notifications alerts desktop review ci";
 const GITHUB_WORDS: &str = "github gh cli account login auth path executable merge squash rebase delete branch avatars";
 const APPEARANCE_WORDS: &str = "appearance theme light dark system font mono monospace size interface";
 
@@ -213,6 +213,13 @@ impl Workspace {
             cx,
         );
         let weak = cx.weak_entity();
+        let alerts_switch = {
+            let weak = cx.weak_entity();
+            Switch::new("pref-alerts").checked(prefs.desktop_alerts).on_click(move |on: &bool, _, cx| {
+                let on = *on;
+                let _ = weak.update(cx, |s, cx| s.update_settings(cx, |p| p.desktop_alerts = on));
+            })
+        };
         let refresh_switch = {
             let weak = cx.weak_entity();
             Switch::new("pref-auto-refresh").checked(prefs.auto_refresh).on_click(move |on: &bool, _, cx| {
@@ -246,6 +253,13 @@ impl Workspace {
                     let on = *on;
                     let _ = weak.update(cx, |s, cx| s.update_settings(cx, |p| p.relative_dates = on));
                 }),
+            ))
+            .child(group(colors, mono.clone(), "Notifications"))
+            .child(setting(
+                colors,
+                "Desktop alerts",
+                "Show a macOS notification for new review requests and CI activity. The Home screen checks GitHub every minute either way.",
+                alerts_switch,
             ))
     }
 
