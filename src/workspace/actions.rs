@@ -787,6 +787,7 @@ impl Workspace {
         let label = format!("Starting workflow on {branch}");
         self.mutate(
             label,
+            Report::Notice,
             move || gh::run_action(&slug, 0, &RunAction::Dispatch { workflow, reference: branch, inputs }),
             move |s, cx| {
                 if let Some(t) = s.tabs.iter_mut().find(|t| t.id == tab) {
