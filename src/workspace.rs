@@ -328,6 +328,8 @@ pub struct Tab {
     pub pr_title: Entity<InputState>,
     pub pr_body: Entity<InputState>,
     pub composer: Entity<InputState>,
+    /// The issue page's comment box, separate from the pull request's.
+    pub issue_composer: Entity<InputState>,
     pub commit_message: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
@@ -422,6 +424,8 @@ pub struct Workspace {
     busy: Option<String>,
     /// Clear this tab's comment box on the next frame (needs a window).
     pending_clear: Option<u64>,
+    /// Likewise for a tab's issue comment box.
+    pending_issue_clear: Option<u64>,
     /// Likewise for a tab's line comment box.
     pending_line_clear: Option<u64>,
     /// The Home screen's inbox and notifications. Not per repository.
@@ -521,6 +525,7 @@ impl Workspace {
             pending_line_clear: None,
             pending_commit_clear: None,
             pending_clear: None,
+            pending_issue_clear: None,
             home: home::HomeData::default(),
             home_page: home::HomePage::default(),
             seen: home::Seen::default(),
@@ -598,6 +603,12 @@ impl Workspace {
                 .auto_grow(3, 12)
                 .placeholder("Leave a comment · Markdown supported")
         });
+        let issue_composer = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 12)
+                .placeholder("Leave a comment · Markdown supported")
+        });
         let pr_title = input("", "Title", window, cx);
         let pr_body = cx.new(|cx| {
             InputState::new(window, cx)
@@ -656,6 +667,7 @@ impl Workspace {
             pr_title,
             pr_body,
             composer,
+            issue_composer,
             commit_message,
             line_target: None,
             line_start: None,
@@ -1717,7 +1729,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             return;
         }
         if let (View::Issues, Some(n)) = (t.view, t.issue) {
-            let body = t.composer.read(cx).value().trim().to_string();
+            let body = t.issue_composer.read(cx).value().trim().to_string();
             if !body.is_empty() {
                 self.issue_action(n, gh::IssueAction::Comment(body), cx);
             }

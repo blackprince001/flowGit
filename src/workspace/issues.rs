@@ -472,7 +472,7 @@ impl Workspace {
         );
         items.push((i64::MAX, self.badge(glyph, color, cx), status));
 
-        let composer = col().gap_2().child(Input::new(&t.composer)).child(
+        let composer = col().gap_2().child(Input::new(&t.issue_composer)).child(
             row()
                 .gap_2()
                 .flex_wrap()
@@ -593,7 +593,7 @@ impl Workspace {
                     d.issues.clear();
                 }
                 if clears_composer {
-                    s.pending_clear = Some(tab);
+                    s.pending_issue_clear = Some(tab);
                 }
                 s.ensure(false, cx);
             },

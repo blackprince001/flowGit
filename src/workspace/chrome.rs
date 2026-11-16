@@ -1314,6 +1314,11 @@ impl Render for Workspace {
         {
             t.composer.update(cx, |s, cx| s.set_value("", window, cx));
         }
+        if let Some(id) = self.pending_issue_clear.take()
+            && let Some(t) = self.tabs.iter().find(|t| t.id == id)
+        {
+            t.issue_composer.update(cx, |s, cx| s.set_value("", window, cx));
+        }
         if let Some(id) = self.pending_line_clear.take()
             && let Some(t) = self.tabs.iter().find(|t| t.id == id)
         {
