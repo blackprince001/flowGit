@@ -1007,45 +1007,7 @@ impl Workspace {
             );
         items.push((i64::MAX, self.avatar(me.as_deref(), "you", AVATAR, cx), composer));
 
-        // The rail: each item's avatar column carries the line down to the next.
-        let last = items.len() - 1;
-        let mut thread = col();
-        for (i, (_, avatar, content)) in items.into_iter().enumerate() {
-            thread = thread.child(
-                div()
-                    .relative()
-                    .flex()
-                    .w_full()
-                    // Absolute so it spans the item's full height, through to the next avatar.
-                    .when(i < last, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(px(AVATAR / 2. - 1.))
-                                .top(px(AVATAR))
-                                .bottom_0()
-                                .w(px(2.))
-                                .bg(rgb(rail_color(colors))),
-                        )
-                    })
-                    .child(col().w(px(AVATAR)).flex_shrink_0().items_center().child(avatar))
-                    .child(
-                        content
-                            .flex_1()
-                            .min_w_0()
-                            .pl(px(RAIL_INSET - AVATAR))
-                            .pt(px(7.))
-                            .pb(px(if i < last { 26. } else { 0. })),
-                    ),
-            );
-        }
-        div()
-            .id(("conversation", t.id))
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&t.page_scroll)
-            .child(col().p_4().max_w(px(900.)).w_full().mx_auto().child(thread))
-            .into_any_element()
+        self.timeline("conversation", items.into_iter().map(|(_, avatar, content)| (avatar, content)).collect(), cx)
     }
     fn pr_commits(&self, pr: &gh::PullDetail, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);

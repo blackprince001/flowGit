@@ -1,6 +1,6 @@
 //! Issues: a filterable list, and a detail page with the conversation, a comment
 //! box, and close and reopen buttons. Laid out like the pull request view.
-use super::pulls::{AVATAR, RAIL_INSET, label_pill, rail_color, segmented, stamp};
+use super::pulls::{AVATAR, label_pill, segmented, stamp};
 use super::ui::*;
 use super::*;
 use crate::{
@@ -533,50 +533,7 @@ impl Workspace {
             composer,
         ));
 
-        // The rail: each item's avatar column carries the line down to the next.
-        let last = items.len() - 1;
-        let mut thread = col();
-        for (i, (_, avatar, content)) in items.into_iter().enumerate() {
-            thread = thread.child(
-                div()
-                    .relative()
-                    .flex()
-                    .w_full()
-                    .when(i < last, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(px(AVATAR / 2. - 1.))
-                                .top(px(AVATAR))
-                                .bottom_0()
-                                .w(px(2.))
-                                .bg(rgb(rail_color(colors))),
-                        )
-                    })
-                    .child(
-                        col()
-                            .w(px(AVATAR))
-                            .flex_shrink_0()
-                            .items_center()
-                            .child(avatar),
-                    )
-                    .child(
-                        content
-                            .flex_1()
-                            .min_w_0()
-                            .pl(px(RAIL_INSET - AVATAR))
-                            .pt(px(7.))
-                            .pb(px(if i < last { 26. } else { 0. })),
-                    ),
-            );
-        }
-        div()
-            .id(("issue-conversation", t.id))
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&t.page_scroll)
-            .child(col().p_4().max_w(px(900.)).w_full().mx_auto().child(thread))
-            .into_any_element()
+        self.timeline("issue-conversation", items.into_iter().map(|(_, avatar, content)| (avatar, content)).collect(), cx)
     }
 
     /// Closing asks first, as closing a pull request does.

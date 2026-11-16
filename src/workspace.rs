@@ -33,6 +33,7 @@ mod preferences;
 mod pulls;
 mod releases;
 mod review;
+mod timeline;
 mod ui;
 
 pub use compare::NewPullRequest;
