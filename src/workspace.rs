@@ -349,6 +349,9 @@ pub struct Tab {
     pub draft_notes: Entity<InputState>,
     /// Notes GitHub wrote for the draft's tag.
     pub generated_notes: Load<gh::GeneratedNotes>,
+    /// The panel that starts a workflow with inputs, and the fields it shows.
+    pub dispatch: actions::DispatchPanel,
+    pub dispatch_fields: Vec<actions::DispatchField>,
 }
 
 /// The release draft panel. Its fields live on the tab.
@@ -672,6 +675,8 @@ impl Workspace {
             draft_title,
             draft_notes,
             generated_notes: Load::default(),
+            dispatch: actions::DispatchPanel::Closed,
+            dispatch_fields: Vec::new(),
         }
     }
     /// Focus the repository's existing tab, or open one on the default view.

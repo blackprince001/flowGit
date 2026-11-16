@@ -319,6 +319,11 @@ impl Workspace {
     }
 }
 
+/// A form field: its title above the control.
+pub fn field(colors: Palette, title: impl Into<SharedString>, control: impl IntoElement) -> Div {
+    col().min_w_0().gap_1().child(label(colors, title)).child(control)
+}
+
 /// A titled panel with an optional trailing control, used by detail pages.
 pub fn section(colors: Palette, title: impl Into<SharedString>) -> Div {
     row()
