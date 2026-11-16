@@ -1262,6 +1262,78 @@ pub enum PrAction {
     },
     /// Answer an existing review thread.
     Reply { to: u64, body: String },
+    /// Post a review: a summary, a verdict and every pending line comment in one call.
+    SubmitReview {
+        commit: String,
+        event: ReviewEvent,
+        body: String,
+        comments: Vec<DraftComment>,
+    },
+}
+
+/// What a review says about the pull request as a whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+impl ReviewEvent {
+    pub const ALL: [Self; 3] = [Self::Comment, Self::Approve, Self::RequestChanges];
+    /// The value GitHub's reviews endpoint expects.
+    pub fn api(self) -> &'static str {
+        match self {
+            Self::Comment => "COMMENT",
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Comment => "Comment",
+            Self::Approve => "Approve",
+            Self::RequestChanges => "Request changes",
+        }
+    }
+}
+
+/// A line comment waiting for its review to be sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftComment {
+    pub path: String,
+    pub line: u32,
+    /// The new (right) side for additions and context, old (left) for deletions.
+    pub right: bool,
+    /// The first line and side of a multi-line comment.
+    pub start: Option<(u32, bool)>,
+    pub body: String,
+}
+
+/// The body of `POST pulls/{n}/reviews`.
+pub fn review_payload(commit: &str, event: ReviewEvent, body: &str, comments: &[DraftComment]) -> serde_json::Value {
+    let side = |right: bool| if right { "RIGHT" } else { "LEFT" };
+    let comments: Vec<serde_json::Value> = comments
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::json!({
+                "path": c.path,
+                "line": c.line,
+                "side": side(c.right),
+                "body": c.body,
+            });
+            if let Some((first, first_right)) = c.start {
+                v["start_line"] = first.into();
+                v["start_side"] = side(first_right).into();
+            }
+            v
+        })
+        .collect();
+    serde_json::json!({
+        "commit_id": commit,
+        "event": event.api(),
+        "body": body,
+        "comments": comments,
+    })
 }
 pub fn pr_action(slug: &str, number: u64, action: &PrAction) -> Result<String> {
     let n = number.to_string();
@@ -1329,6 +1401,16 @@ pub fn pr_action(slug: &str, number: u64, action: &PrAction) -> Result<String> {
             let input = serde_json::json!({ "body": body });
             let endpoint = format!("repos/{slug}/pulls/{number}/comments/{to}/replies");
             gh_in(&["api", "-X", "POST", &endpoint, "--input", "-"], None, Some(&input.to_string())).map(|_| "Reply added.".into())
+        }
+        PrAction::SubmitReview {
+            commit,
+            event,
+            body,
+            comments,
+        } => {
+            let input = review_payload(commit, *event, body, comments);
+            let endpoint = format!("repos/{slug}/pulls/{number}/reviews");
+            gh_in(&["api", "-X", "POST", &endpoint, "--input", "-"], None, Some(&input.to_string())).map(|_| "Review submitted.".into())
         }
     }
 }
@@ -1727,6 +1809,33 @@ mod tests {
         assert_eq!(t[0].root.id, 1);
         assert_eq!(t[0].replies.iter().map(|r| r.id).collect::<Vec<_>>(), vec![2]);
         assert!(t[1].replies.is_empty());
+    }
+    #[test]
+    fn builds_review_payloads() {
+        let single = DraftComment {
+            path: "a.rs".into(),
+            line: 7,
+            right: true,
+            start: None,
+            body: "nit".into(),
+        };
+        let range = DraftComment {
+            path: "b.rs".into(),
+            line: 12,
+            right: false,
+            start: Some((9, false)),
+            body: "why?".into(),
+        };
+        let v = review_payload("abc123", ReviewEvent::RequestChanges, "needs work", &[single, range]);
+        assert_eq!(v["commit_id"], "abc123");
+        assert_eq!(v["event"], "REQUEST_CHANGES");
+        assert_eq!(v["body"], "needs work");
+        let c = v["comments"].as_array().unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!((c[0]["path"].as_str(), c[0]["line"].as_u64(), c[0]["side"].as_str()), (Some("a.rs"), Some(7), Some("RIGHT")));
+        assert!(c[0].get("start_line").is_none());
+        assert_eq!((c[1]["start_line"].as_u64(), c[1]["start_side"].as_str(), c[1]["side"].as_str()), (Some(9), Some("LEFT"), Some("LEFT")));
+        assert_eq!(review_payload("x", ReviewEvent::Approve, "", &[])["comments"], serde_json::json!([]));
     }
     #[test]
     fn rolls_up_checks() {

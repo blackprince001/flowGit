@@ -85,19 +85,18 @@ pub(super) fn segmented<T: Copy + PartialEq + 'static>(
 
 impl Workspace {
     pub(super) fn pulls_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match self.current().and_then(|t| t.pr) {
-            Some(n) => self.pull_page(n, window, cx),
-            None => self.pull_list(cx),
+        match self.current().map(|t| (t.new_pr.is_open(), t.pr)) {
+            Some((true, _)) => self.compare_view(window, cx),
+            Some((false, Some(n))) => self.pull_page(n, window, cx),
+            _ => self.pull_list(cx),
         }
     }
 
     fn pull_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let Some(t) = self.current() else { return div().into_any_element() };
-        let Some(repo) = self.repo(&t.repo).cloned() else { return div().into_any_element() };
         let l = self.data(&t.repo).and_then(|d| d.pulls.get(&t.pr_filter));
         let q = t.search.read(cx).value().trim().to_lowercase();
-        let compare = format!("https://github.com/{}/compare", repo.slug());
         let options = PrFilter::ALL.map(|f| (f, f.title().to_string()));
         let header = row()
             .h(px(BAR + 6.))
@@ -126,8 +125,9 @@ impl Workspace {
                     .icon(Glyph::Compare)
                     .outline()
                     .small()
-                    .tooltip("Compare branches on GitHub")
-                    .on_click(move |_, _, cx| cx.open_url(&compare)),
+                    .tooltip("Compare branches and open a pull request")
+                    .disabled(self.default_branch(&t.repo).is_none())
+                    .on_click(cx.listener(|s, _, w, cx| s.new_pull_request(&NewPullRequest, w, cx))),
             );
         let body = match state(colors, l, "Loading pull requests…") {
             Err(p) => p.into_any_element(),
@@ -386,9 +386,19 @@ impl Workspace {
                     .current()
                     .map(|t| t.composer.read(cx).value().trim().to_string())
                     .unwrap_or_default();
-                let (a, b) = (weak.clone(), weak.clone());
+                let (a, b, c) = (weak.clone(), weak.clone(), weak.clone());
                 let body2 = body.clone();
+                let pending = s.current().map(|t| s.drafts.count(&t.repo, n)).unwrap_or(0);
                 vec![
+                    Entry::Item(
+                        Item::new(if pending > 0 { "Finish review…" } else { "Write a review…" })
+                            .icon(Glyph::ListChecks)
+                            .detail(if pending > 0 { format!("{pending} pending") } else { "summary and verdict".to_string() })
+                            .on_click(move |w, cx| {
+                                let _ = c.update(cx, |s, cx| s.open_finish_review(&FinishReview, w, cx));
+                            }),
+                    ),
+                    Entry::Separator,
                     Entry::Item(Item::new("Approve").icon(IconName::CircleCheck).on_click(move |_, cx| {
                         let _ = a.update(cx, |s, cx| s.pr_action(n, PrAction::Approve, cx));
                     })),
@@ -541,6 +551,8 @@ impl Workspace {
             (PrPage::Checks, format!("Checks  {}", p.status_check_rollup.len())),
             (PrPage::Files, format!("Files changed  {}", pr.changed_files)),
         ];
+        let pending = self.drafts.count(&t.repo, n);
+        let pending_bar = (pending > 0).then(|| self.pending_bar(pending, cx));
         let sub = row()
             .h(px(BAR))
             .flex_shrink_0()
@@ -554,6 +566,7 @@ impl Workspace {
                 }
             }, cx))
             .when_some(rollup, |s, r| s.child(check_icon(colors, r)))
+            .children(pending_bar)
             .child(div().flex_1())
             .child(super::diff::counts(colors, p.additions as u32, p.deletions as u32));
         let body = match t.pr_page {
@@ -578,7 +591,7 @@ impl Workspace {
                                         ("pr-diff", t.id),
                                         diff,
                                         t.diff_scroll.clone(),
-                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows))),
+                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n))),
                                         cx,
                                     )))
                                     .when_some(t.line_target.clone(), |c, target| c.child(self.line_panel(n, pr, target, window, cx))),
@@ -655,7 +668,21 @@ impl Workspace {
                 );
             }
         }
+        // Pending comments on this line, after the threads that are already posted.
+        let me = self.user.data.as_ref().map(|u| u.login.clone());
+        let drafts: Vec<_> = self.drafts.list(&t.repo, n).iter().filter(|d| d.target() == target).collect();
+        for d in &drafts {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(self.avatar(me.as_deref(), "you", 20., cx))
+                    .child(self.pending_comment(n, d, window, cx).flex_1().min_w_0()),
+            );
+        }
         let replying = !threads.is_empty();
+        let in_review = self.drafts.count(&t.repo, n) > 0;
         col()
             .flex_shrink_0()
             .max_h(px(420.))
@@ -665,7 +692,7 @@ impl Workspace {
             .border_color(rgb(colors.border))
             .bg(rgb(colors.panel))
             .child(header)
-            .when(replying, |c| {
+            .when(replying || !drafts.is_empty(), |c| {
                 c.child(
                     div()
                         .id(("line-threads", t.id))
@@ -688,16 +715,52 @@ impl Workspace {
                         }
                         cx.notify();
                     })))
-                    .child(
-                        Button::new("send-line-comment")
-                            .label(if replying { "Reply" } else { "Comment" })
-                            .icon(Glyph::Message)
-                            .primary()
-                            .small()
-                            .loading(self.busy_with("Commenting"))
-                            .disabled(self.busy.is_some())
-                            .on_click(cx.listener(|s, _, w, cx| s.submit(&Submit, w, cx))),
-                    ),
+                    .when(replying, |r| {
+                        r.child(
+                            Button::new("send-line-comment")
+                                .label("Reply")
+                                .icon(Glyph::Message)
+                                .primary()
+                                .small()
+                                .loading(self.busy_with("Commenting"))
+                                .disabled(self.busy.is_some())
+                                .on_click(cx.listener(|s, _, w, cx| s.submit(&Submit, w, cx))),
+                        )
+                    })
+                    // Once a review is started, new comments join it; GitHub offers no single comment then.
+                    .when(!replying && in_review, |r| {
+                        r.child(
+                            Button::new("add-review-comment")
+                                .label("Add review comment")
+                                .icon(Glyph::Message)
+                                .primary()
+                                .small()
+                                .on_click(cx.listener(move |s, _, _, cx| s.add_draft_line(n, cx))),
+                        )
+                    })
+                    .when(!replying && !in_review, |r| {
+                        r.child(
+                            Button::new("send-line-comment")
+                                .label("Add single comment")
+                                .icon(Glyph::Message)
+                                .outline()
+                                .small()
+                                .loading(self.busy_with("Commenting"))
+                                .disabled(self.busy.is_some())
+                                .tooltip("Post this comment now")
+                                .on_click(cx.listener(|s, _, w, cx| s.submit(&Submit, w, cx))),
+                        )
+                        .child(
+                            Button::new("start-review")
+                                .label("Start a review")
+                                .icon(Glyph::ListChecks)
+                                .primary()
+                                .small()
+                                .disabled(self.busy.is_some())
+                                .tooltip("Keep this comment pending and send everything together")
+                                .on_click(cx.listener(move |s, _, _, cx| s.add_draft_line(n, cx))),
+                        )
+                    }),
             )
     }
 
@@ -885,6 +948,11 @@ impl Workspace {
                 self.review_thread(n, k, thread, window, cx),
             ));
         }
+        // Pending review comments sit at the end, in the order they were written.
+        let me = self.user.data.as_ref().map(|u| u.login.clone());
+        for d in self.drafts.list(&t.repo, n) {
+            items.push((i64::MAX - 1, self.avatar(me.as_deref(), "you", AVATAR, cx), self.pending_comment(n, d, window, cx)));
+        }
         items.sort_by_key(|(at, _, _)| *at);
 
         // Where the pull request stands, with when it merged or closed.
@@ -937,7 +1005,6 @@ impl Workspace {
                             .on_click(cx.listener(|s, _, w, cx| s.submit(&Submit, w, cx))),
                     ),
             );
-        let me = self.user.data.as_ref().map(|u| u.login.clone());
         items.push((i64::MAX, self.avatar(me.as_deref(), "you", AVATAR, cx), composer));
 
         // The rail: each item's avatar column carries the line down to the next.

@@ -18,7 +18,7 @@ fn commands() -> Vec<(&'static str, &'static str, Run)> {
         ("Find file…", "⌘P", |s, w, cx| s.find_file(&FindFile, w, cx)),
         ("Mark all notifications as read", "", |s, _, cx| s.mark_all_read(cx)),
         ("Refresh", "⌘R", |s, w, cx| s.refresh(&Refresh, w, cx)),
-        ("Draft a release…", "⇧⌘N", |s, w, cx| {
+        ("Draft a release…", "⌥⌘N", |s, w, cx| {
             if s.current().is_some() {
                 s.set_view(View::Releases, cx);
                 s.open_release_draft(w, cx);

@@ -13,12 +13,19 @@ use std::collections::HashMap;
 const LINE: f32 = 22.;
 const GUTTER: f32 = 22.;
 
+// Keyboard stepping through a diff. Bound in main.rs under the `DiffNav`
+// context, which the workspace sets while a diff is on screen and which never
+// matches while a text input has focus.
+actions!(gitflow, [NextFile, PreviousFile, NextHunk, PreviousHunk]);
+
 /// Review comments on a pull request diff: threads per line, and the line
 /// whose comment box is open.
 pub struct Review {
     pub threads: HashMap<LineTarget, usize>,
     /// Where multi-line threads begin, by the line they end on.
     pub starts: HashMap<LineTarget, LineTarget>,
+    /// Pending review comments per line, not yet sent.
+    pub drafts: HashMap<LineTarget, usize>,
     /// The selected diff rows, first to last.
     pub rows: Option<(usize, usize)>,
 }
@@ -37,9 +44,40 @@ impl Review {
                 }
             }
         }
-        Self { threads: map, starts, rows }
+        Self {
+            threads: map,
+            starts,
+            drafts: HashMap::new(),
+            rows,
+        }
+    }
+    pub fn with_drafts(mut self, drafts: HashMap<LineTarget, usize>) -> Self {
+        self.drafts = drafts;
+        self
     }
 }
+/// The rows that start a file, in order.
+pub fn file_rows(diff: &DiffView) -> Vec<usize> {
+    diff.rows.iter().enumerate().filter(|(_, (_, line))| line.is_none()).map(|(i, _)| i).collect()
+}
+/// The rows that start a hunk, in order.
+pub fn hunk_rows(diff: &DiffView) -> Vec<usize> {
+    diff.rows
+        .iter()
+        .enumerate()
+        .filter(|(_, (f, line))| line.is_some_and(|l| diff.files[*f].lines[l].kind == LineKind::Hunk))
+        .map(|(i, _)| i)
+        .collect()
+}
+/// The first of `rows` after `from`, or the last before it.
+pub fn step(rows: &[usize], from: usize, forward: bool) -> Option<usize> {
+    if forward {
+        rows.iter().copied().find(|&r| r > from)
+    } else {
+        rows.iter().copied().rev().find(|&r| r < from)
+    }
+}
+
 /// Where a thread sits in the current diff; outdated threads have no line.
 pub fn thread_target(t: &gh::Thread) -> Option<LineTarget> {
     Some(LineTarget {
@@ -123,6 +161,56 @@ pub fn counts(colors: Palette, additions: u32, deletions: u32) -> Div {
 }
 
 impl Workspace {
+    /// The diff the active tab is showing, if it is showing one.
+    pub(super) fn active_diff(&self) -> Option<Arc<DiffView>> {
+        let t = self.current()?;
+        let data = self.data(&t.repo)?;
+        match t.view {
+            View::Pulls => match &t.new_pr {
+                compare::NewPr::Open { page: compare::ComparePage::Files, .. } => data.compare_diff.get(&t.new_pr.range().map(|(b, h)| (b.to_string(), h.to_string()))?)?.data.clone(),
+                compare::NewPr::Open { .. } => None,
+                compare::NewPr::Closed if t.pr_page == PrPage::Files => data.pull_diff.get(&t.pr?)?.data.clone(),
+                compare::NewPr::Closed => None,
+            },
+            View::Commits => Some(data.commit.get(t.commit.as_ref()?)?.data.as_ref()?.diff.clone()),
+            _ => None,
+        }
+    }
+    /// Scroll the diff to the next or previous file (`files`) or hunk.
+    fn step_diff(&mut self, files: bool, forward: bool, cx: &mut Context<Self>) {
+        // Menus and dialogs sit over the diff; keys belong to them.
+        if self.popup.is_some() || self.overlay != Overlay::None {
+            return;
+        }
+        let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
+        let scroll = t.diff_scroll.clone();
+        // The first row in view, which the pinned file header sits over.
+        let offset = -f32::from(scroll.0.borrow().base_handle.offset().y);
+        let top = (offset / LINE).floor().max(0.) as usize;
+        let target = if files {
+            step(&file_rows(&diff), top, forward)
+        } else {
+            // A hunk lands just under the pinned file header so its @@ line shows.
+            step(&hunk_rows(&diff), top + 1, forward).map(|r| r.saturating_sub(1))
+        };
+        if let Some(row) = target {
+            scroll.scroll_to_item(row, ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+    pub(super) fn next_file(&mut self, _: &NextFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_diff(true, true, cx);
+    }
+    pub(super) fn previous_file(&mut self, _: &PreviousFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_diff(true, false, cx);
+    }
+    pub(super) fn next_hunk(&mut self, _: &NextHunk, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_diff(false, true, cx);
+    }
+    pub(super) fn previous_hunk(&mut self, _: &PreviousHunk, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_diff(false, false, cx);
+    }
+
     /// The changed-file list; clicking a file scrolls the diff to it.
     pub(super) fn diff_files(&self, colors: Palette, diff: &Arc<DiffView>, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
         let mut list = col().py_1();
@@ -241,6 +329,7 @@ impl Workspace {
                                 let target = rv.as_ref().and_then(|_| line_target(file, line));
                                 let picked = target.is_some() && rv.as_ref().and_then(|r| r.rows).is_some_and(|(a, b)| (a..=b).contains(&i));
                                 let threads = target.as_ref().and_then(|t| rv.as_ref()?.threads.get(t).copied()).unwrap_or(0);
+                                let pending = target.as_ref().and_then(|t| rv.as_ref()?.drafts.get(t).copied()).unwrap_or(0);
                                 let comment = rv.as_ref().map(|_| {
                                     let cell = div().id(("comment-line", i)).w(px(GUTTER)).h_full().flex_shrink_0().flex().items_center().justify_center();
                                     let Some(target) = target.clone() else { return cell };
@@ -267,19 +356,20 @@ impl Workspace {
                                                     )
                                                 }),
                                         )
-                                    } else if threads > 0 {
+                                    } else if threads + pending > 0 {
+                                        // Amber while any of it is still a draft.
                                         div()
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .size(px(16.))
                                             .rounded(px(8.))
-                                            .bg(rgb(colors.blue))
+                                            .bg(rgb(if pending > 0 { colors.amber } else { colors.blue }))
                                             .text_color(rgb(colors.primary_text))
                                             .font_family(".SystemUIFont")
                                             .text_size(px(10.))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(threads.to_string())
+                                            .child((threads + pending).to_string())
                                     } else {
                                         div()
                                             .flex()
@@ -394,5 +484,37 @@ impl Workspace {
             )
             .children(sticky)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_rows, hunk_rows, step};
+    use crate::workspace::DiffView;
+
+    fn sample() -> DiffView {
+        // a.txt: two hunks; b.txt: one hunk.
+        let text = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-x\n+y\n k\n@@ -10,2 +10,2 @@\n-p\n+q\n r\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-m\n+n\n";
+        DiffView::new(crate::gh::parse_diff(text))
+    }
+
+    #[test]
+    fn finds_file_and_hunk_rows() {
+        let d = sample();
+        // Rows: 0 header a, 1 hunk, 2-4 lines, 5 hunk, 6-8 lines, 9 header b, 10 hunk, 11-12 lines.
+        assert_eq!(file_rows(&d), vec![0, 9]);
+        assert_eq!(hunk_rows(&d), vec![1, 5, 10]);
+    }
+    #[test]
+    fn steps_between_rows_and_stops_at_the_ends() {
+        let rows = [0, 9, 20];
+        assert_eq!(step(&rows, 0, true), Some(9));
+        assert_eq!(step(&rows, 5, true), Some(9));
+        assert_eq!(step(&rows, 20, true), None);
+        // From the middle of a file, previous goes to that file's own header.
+        assert_eq!(step(&rows, 14, false), Some(9));
+        assert_eq!(step(&rows, 9, false), Some(0));
+        assert_eq!(step(&rows, 0, false), None);
+        assert_eq!(step(&[], 3, true), None);
     }
 }

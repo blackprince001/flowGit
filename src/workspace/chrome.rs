@@ -1301,6 +1301,9 @@ impl Render for Workspace {
         {
             t.line_composer.update(cx, |s, cx| s.set_value("", window, cx));
         }
+        if std::mem::take(&mut self.pending_review_clear) {
+            self.review_body.update(cx, |s, cx| s.set_value("", window, cx));
+        }
         let colors = palette(cx);
         let center = if self.current().is_some() {
             let view = self.content(window, cx);
@@ -1355,6 +1358,8 @@ impl Render for Workspace {
             .font_family(".SystemUIFont")
             .text_size(px(13.))
             .track_focus(&self.focus)
+            // Diff stepping keys (j k n p) apply while a diff is on screen.
+            .when(self.overlay == Overlay::None && self.active_diff().is_some(), |d| d.key_context("DiffNav"))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::find_file))
@@ -1370,6 +1375,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_add_url))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::back))
+            .on_action(cx.listener(Self::new_pull_request))
+            .on_action(cx.listener(Self::open_finish_review))
+            .on_action(cx.listener(Self::next_file))
+            .on_action(cx.listener(Self::previous_file))
+            .on_action(cx.listener(Self::next_hunk))
+            .on_action(cx.listener(Self::previous_hunk))
             .on_action(cx.listener(|s, _: &ShowCode, _, cx| s.set_view(View::Code, cx)))
             .on_action(cx.listener(|s, _: &ShowCommits, _, cx| s.set_view(View::Commits, cx)))
             .on_action(cx.listener(|s, _: &ShowIssues, _, cx| s.set_view(View::Issues, cx)))
@@ -1399,6 +1410,7 @@ impl Render for Workspace {
             Overlay::None => {}
             Overlay::Prefs => root = root.child(self.preferences_view(cx)),
             Overlay::AddUrl { .. } => root = root.child(self.add_url_view(cx)),
+            Overlay::FinishReview { .. } => root = root.child(self.finish_review_view(cx)),
         }
         if let Some(notice) = &self.notice {
             root = root.child(self.notice_view(notice, cx));

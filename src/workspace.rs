@@ -20,6 +20,7 @@ mod actions;
 mod chrome;
 mod code;
 mod commits;
+mod compare;
 mod diff;
 mod home;
 mod issues;
@@ -30,7 +31,12 @@ mod syntax;
 mod preferences;
 mod pulls;
 mod releases;
+mod review;
 mod ui;
+
+pub use compare::NewPullRequest;
+pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
+pub use review::FinishReview;
 
 actions!(
     gitflow,
@@ -167,6 +173,9 @@ pub struct RepoData {
     pub pulls: HashMap<PrFilter, Load<Vec<gh::Pull>>>,
     pub pull: HashMap<u64, Load<gh::PullDetail>>,
     pub pull_diff: HashMap<u64, Load<Arc<DiffView>>>,
+    /// The compare page's commits and diff, per (base, head).
+    pub compare: HashMap<(String, String), Load<Arc<gh::Compare>>>,
+    pub compare_diff: HashMap<(String, String), Load<Arc<DiffView>>>,
     pub commits: HashMap<Option<String>, Load<Arc<CommitGraph>>>,
     pub commit: HashMap<String, Load<Arc<CommitInfo>>>,
     pub tree: HashMap<(String, String), Load<Vec<gh::Entry>>>,
@@ -295,6 +304,8 @@ pub struct Tab {
     pub pr_page: PrPage,
     pub issue_filter: IssueFilter,
     pub issue: Option<u64>,
+    /// The compare page for a new pull request. Not saved with the session.
+    pub new_pr: compare::NewPr,
     pub workflow: Option<u64>,
     pub run: Option<u64>,
     pub job: Option<u64>,
@@ -302,6 +313,8 @@ pub struct Tab {
     pub search: Entity<InputState>,
     /// Filters the job log shown on the Actions page.
     pub log_search: Entity<InputState>,
+    pub pr_title: Entity<InputState>,
+    pub pr_body: Entity<InputState>,
     pub composer: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
@@ -343,6 +356,8 @@ pub enum Overlay {
     Prefs,
     /// `resolving` while the typed repository is being looked up.
     AddUrl { resolving: bool },
+    /// The dialog that sends a pending review, with the verdict picked so far.
+    FinishReview { event: gh::ReviewEvent },
 }
 
 struct Notice {
@@ -402,6 +417,11 @@ pub struct Workspace {
     seen: home::Seen,
     /// When notifications were last polled; None polls now.
     last_notif_poll: Option<Instant>,
+    /// Clear the review summary box on the next frame.
+    pending_review_clear: bool,
+    /// Pending line comments for every pull request, whatever tabs are open.
+    drafts: review::ReviewDrafts,
+    review_body: Entity<InputState>,
     user: Load<gh::User>,
     gh_version: Load<String>,
     prefs_page: PrefsPage,
@@ -452,6 +472,12 @@ impl Workspace {
         for panels in [&sidebar_panels, &brief_panels] {
             cx.observe(panels, |_, _, cx| cx.notify()).detach();
         }
+        let review_body = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(4, 12)
+                .placeholder("Leave a summary · Markdown supported")
+        });
         let focus = cx.focus_handle();
         focus.focus(window);
         let mut s = Self {
@@ -478,6 +504,9 @@ impl Workspace {
             home: home::HomeData::default(),
             seen: home::Seen::default(),
             last_notif_poll: None,
+            pending_review_clear: false,
+            drafts: Default::default(),
+            review_body,
             user: Load::default(),
             gh_version: Load::default(),
             prefs_page: PrefsPage::General,
@@ -542,6 +571,13 @@ impl Workspace {
                 .auto_grow(3, 12)
                 .placeholder("Leave a comment · Markdown supported")
         });
+        let pr_title = input("", "Title", window, cx);
+        let pr_body = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(6, 16)
+                .placeholder("Describe the change · Markdown supported")
+        });
         let line_composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -574,12 +610,15 @@ impl Workspace {
             pr_page: PrPage::Conversation,
             issue_filter: IssueFilter::Open,
             issue: None,
+            new_pr: compare::NewPr::Closed,
             workflow: None,
             run: None,
             job: None,
             log_open: false,
             search,
             log_search,
+            pr_title,
+            pr_body,
             composer,
             line_target: None,
             line_start: None,
@@ -789,6 +828,8 @@ impl Workspace {
             trim(&mut d.issue, 30);
             trim(&mut d.pull, 30);
             trim(&mut d.pull_diff, 10);
+            trim(&mut d.compare, 10);
+            trim(&mut d.compare_diff, 5);
             trim(&mut d.commit, 30);
             trim(&mut d.jobs, 30);
             trim(&mut d.log, 10);
@@ -983,6 +1024,7 @@ impl Workspace {
                         );
                     }
                 }
+                self.ensure_compare(&key, &slug, force, cx);
             }
             View::Actions => {
                 let t = self.current().unwrap();
@@ -1217,6 +1259,7 @@ impl Workspace {
             gh::PrAction::Checkout(_) => format!("Checking out #{number}"),
             gh::PrAction::LineComment { path, line, .. } => format!("Commenting on {path}:{line}"),
             gh::PrAction::Reply { .. } => format!("Commenting on #{number}"),
+            gh::PrAction::SubmitReview { .. } => format!("Submitting review on #{number}"),
         };
         let clears_line = matches!(action, gh::PrAction::LineComment { .. } | gh::PrAction::Reply { .. });
         let clears_composer = matches!(
@@ -1596,6 +1639,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             }
             View::Commits => t.commit = None,
             View::Issues => t.issue = None,
+            View::Pulls if t.new_pr.is_open() => t.new_pr = compare::NewPr::Closed,
             View::Pulls => (t.pr, t.line_target) = (None, None),
             View::Actions if t.log_open => t.log_open = false,
             View::Actions => t.run = None,
@@ -1608,7 +1652,15 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             self.submit_url(false, window, cx);
             return;
         }
+        if matches!(self.overlay, Overlay::FinishReview { .. }) {
+            self.finish_review(cx);
+            return;
+        }
         let Some(t) = self.current() else { return };
+        if t.view == View::Pulls && t.new_pr.is_open() {
+            self.create_pull(cx);
+            return;
+        }
         if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.line_target.is_some()) {
             self.submit_line(n, cx);
             return;
@@ -1642,6 +1694,11 @@ impl Workspace {
             return;
         };
         let existing = pr.threads.iter().rev().find(|th| diff::thread_target(th).as_ref() == Some(&target));
+        // With a review under way, a new comment joins it instead of posting alone.
+        if existing.is_none() && self.drafts.count(&t.repo, n) > 0 {
+            self.add_draft_line(n, cx);
+            return;
+        }
         let action = match existing {
             Some(th) => gh::PrAction::Reply { to: th.root.id, body },
             None => gh::PrAction::LineComment {
