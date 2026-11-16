@@ -69,6 +69,7 @@ impl Workspace {
                 v["file"] = json!(t.file);
             }
             View::Commits => v["commit"] = json!(t.commit),
+            View::Issues => v["issue"] = json!(t.issue),
             View::Pulls => {
                 if let Some(n) = t.pr {
                     let title = self
