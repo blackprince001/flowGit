@@ -38,6 +38,7 @@ mod ui;
 
 pub use compare::NewPullRequest;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
+use diff::NavPos;
 pub use review::FinishReview;
 
 actions!(
@@ -341,6 +342,8 @@ pub struct Tab {
     pub line_composer: Entity<InputState>,
     pub list_scroll: UniformListScrollHandle,
     pub diff_scroll: UniformListScrollHandle,
+    /// The diff row j/k/n/p last scrolled to; steps start there while it is on screen.
+    pub diff_nav: Option<NavPos>,
     pub log_scroll: UniformListScrollHandle,
     pub page_scroll: ScrollHandle,
     pub release_list: ListState,
@@ -676,6 +679,7 @@ impl Workspace {
             line_composer,
             list_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
+            diff_nav: None,
             log_scroll: UniformListScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             release_list: ListState::new(0, ListAlignment::Top, px(600.)),

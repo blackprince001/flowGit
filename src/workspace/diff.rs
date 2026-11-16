@@ -78,6 +78,42 @@ pub fn step(rows: &[usize], from: usize, forward: bool) -> Option<usize> {
     }
 }
 
+/// The row keyboard navigation last scrolled to, and the diff it was in.
+/// Stepping from it, not from the first visible row, keeps j/k moving near the
+/// end of a list, where a target can't reach the top of the view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavPos {
+    pub diff: usize,
+    pub row: usize,
+}
+impl NavPos {
+    pub fn new(diff: &Arc<DiffView>, row: usize) -> Self {
+        Self { diff: Arc::as_ptr(diff) as usize, row }
+    }
+    /// The row to step from, if this position still belongs to `diff`.
+    pub fn row_in(pos: Option<Self>, diff: &Arc<DiffView>) -> Option<usize> {
+        pos.filter(|p| p.diff == Arc::as_ptr(diff) as usize).map(|p| p.row)
+    }
+}
+
+/// The row to scroll to for a next or previous file (`rows` are file rows) or
+/// hunk (`rows` are hunk rows). `top` is the first visible row and `visible` how
+/// many fit. `last` is the row navigation last scrolled to; it is the place to
+/// step from while it is still on screen, and `top` otherwise (the user has
+/// scrolled away, or the diff changed).
+pub fn nav_target(rows: &[usize], hunks: bool, top: usize, visible: usize, last: Option<usize>, forward: bool) -> Option<usize> {
+    let from = match last {
+        Some(l) if (top..=top + visible).contains(&l) => l,
+        _ => top,
+    };
+    if hunks {
+        // A hunk lands just under the pinned file header so its @@ line shows.
+        step(rows, from + 1, forward).map(|r| r.saturating_sub(1))
+    } else {
+        step(rows, from, forward)
+    }
+}
+
 /// Where a thread sits in the current diff; outdated threads have no line.
 pub fn thread_target(t: &gh::Thread) -> Option<LineTarget> {
     Some(LineTarget {
@@ -185,16 +221,19 @@ impl Workspace {
         let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
         let scroll = t.diff_scroll.clone();
         // The first row in view, which the pinned file header sits over.
-        let offset = -f32::from(scroll.0.borrow().base_handle.offset().y);
-        let top = (offset / LINE).floor().max(0.) as usize;
-        let target = if files {
-            step(&file_rows(&diff), top, forward)
-        } else {
-            // A hunk lands just under the pinned file header so its @@ line shows.
-            step(&hunk_rows(&diff), top + 1, forward).map(|r| r.saturating_sub(1))
+        let (offset, height) = {
+            let state = scroll.0.borrow();
+            (-f32::from(state.base_handle.offset().y), f32::from(state.base_handle.bounds().size.height))
         };
-        if let Some(row) = target {
+        let top = (offset / LINE).floor().max(0.) as usize;
+        let visible = (height / LINE).floor() as usize;
+        let rows = if files { file_rows(&diff) } else { hunk_rows(&diff) };
+        let last = NavPos::row_in(t.diff_nav, &diff);
+        if let Some(row) = nav_target(&rows, !files, top, visible, last, forward) {
             scroll.scroll_to_item(row, ScrollStrategy::Top);
+            if let Some(t) = self.current_mut() {
+                t.diff_nav = Some(NavPos::new(&diff, row));
+            }
             cx.notify();
         }
     }
@@ -489,7 +528,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_rows, hunk_rows, step};
+    use super::{file_rows, hunk_rows, nav_target, step};
     use crate::workspace::DiffView;
 
     fn sample() -> DiffView {
@@ -516,5 +555,42 @@ mod tests {
         assert_eq!(step(&rows, 9, false), Some(0));
         assert_eq!(step(&rows, 0, false), None);
         assert_eq!(step(&[], 3, true), None);
+    }
+    #[test]
+    fn steps_from_the_top_row_when_nothing_was_navigated() {
+        let files = [0, 9, 20];
+        assert_eq!(nav_target(&files, false, 0, 10, None, true), Some(9));
+        assert_eq!(nav_target(&files, false, 10, 10, None, false), Some(9));
+        // Hunks land one row above the hunk.
+        let hunks = [1, 5, 10];
+        assert_eq!(nav_target(&hunks, true, 0, 10, None, true), Some(4));
+    }
+    #[test]
+    fn keeps_moving_when_the_target_cannot_reach_the_top() {
+        // 25 rows, 10 visible: the view stops at row 15, so file 20 sits mid-screen.
+        let files = [0, 9, 20, 23];
+        let first = nav_target(&files, false, 9, 10, Some(9), true);
+        assert_eq!(first, Some(20));
+        // The view is clamped at top 15. From the first visible row this would
+        // pick 20 again; from the row navigated to it moves on.
+        assert_eq!(nav_target(&files, false, 15, 10, first, true), Some(23));
+        // Past the last file there is nowhere to go.
+        assert_eq!(nav_target(&files, false, 15, 10, Some(23), true), None);
+        // And back up.
+        assert_eq!(nav_target(&files, false, 15, 10, Some(23), false), Some(20));
+    }
+    #[test]
+    fn ignores_a_navigation_row_the_user_scrolled_away_from() {
+        let files = [0, 9, 20, 40];
+        // Last navigated to 9, but the view is now around row 30.
+        assert_eq!(nav_target(&files, false, 30, 10, Some(9), true), Some(40));
+        assert_eq!(nav_target(&files, false, 30, 10, Some(9), false), Some(20));
+    }
+    #[test]
+    fn steps_hunks_from_the_last_hunk_reached() {
+        let hunks = [1, 5, 10, 12];
+        // Landed on the hunk at 10 (scrolled to row 9); the next is 12, not 10 again.
+        assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), true), Some(11));
+        assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), false), Some(4));
     }
 }
