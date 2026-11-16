@@ -21,6 +21,7 @@ pub fn view_glyph(view: View) -> Icon {
     match view {
         View::Code => Glyph::Code.into(),
         View::Commits => Glyph::Graph.into(),
+        View::Issues => Glyph::CircleDot.into(),
         View::Pulls => Glyph::PullRequest.into(),
         View::Actions => Glyph::CirclePlay.into(),
         View::Releases => Glyph::Tag.into(),
@@ -629,6 +630,10 @@ impl Workspace {
                 let page = match t.view {
                     View::Code => String::new(),
                     View::Commits => "/commits".into(),
+                    View::Issues => match t.issue {
+                        Some(n) => format!("/issues/{n}"),
+                        None => "/issues".into(),
+                    },
                     View::Pulls => match t.pr {
                         Some(n) => format!("/pull/{n}"),
                         None => "/pulls".into(),
@@ -1335,6 +1340,7 @@ impl Workspace {
         match t.view {
             View::Code => self.code_view(window, cx),
             View::Commits => self.commits_view(window, cx),
+            View::Issues => self.issues_view(window, cx),
             View::Pulls => self.pulls_view(window, cx),
             View::Actions => self.actions_view(window, cx),
             View::Releases => self.releases_view(window, cx),
@@ -1420,6 +1426,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::back))
             .on_action(cx.listener(|s, _: &ShowCode, _, cx| s.set_view(View::Code, cx)))
             .on_action(cx.listener(|s, _: &ShowCommits, _, cx| s.set_view(View::Commits, cx)))
+            .on_action(cx.listener(|s, _: &ShowIssues, _, cx| s.set_view(View::Issues, cx)))
             .on_action(cx.listener(|s, _: &ShowPulls, _, cx| s.set_view(View::Pulls, cx)))
             .on_action(cx.listener(|s, _: &ShowActions, _, cx| s.set_view(View::Actions, cx)))
             .on_action(cx.listener(|s, _: &ShowReleases, _, cx| s.set_view(View::Releases, cx)))

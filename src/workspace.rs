@@ -1,6 +1,6 @@
 use crate::{
     avatars::Avatars,
-    gh::{self, PrFilter},
+    gh::{self, IssueFilter, PrFilter},
     graph::{self, Graph},
     menu::{self as popover, Menu},
     settings::{self, Repo, Saved, Settings, View},
@@ -47,6 +47,7 @@ actions!(
         AddUrl,
         ShowCode,
         ShowCommits,
+        ShowIssues,
         ShowPulls,
         ShowActions,
         ShowReleases,
@@ -159,6 +160,8 @@ pub struct RepoData {
     pub releases: Load<Vec<gh::Release>>,
     pub workflows: Load<Vec<gh::Workflow>>,
     pub runs: HashMap<Option<u64>, Load<Vec<gh::Run>>>,
+    pub issues: HashMap<IssueFilter, Load<Vec<gh::Issue>>>,
+    pub issue: HashMap<u64, Load<gh::IssueDetail>>,
     pub pulls: HashMap<PrFilter, Load<Vec<gh::Pull>>>,
     pub pull: HashMap<u64, Load<gh::PullDetail>>,
     pub pull_diff: HashMap<u64, Load<Arc<DiffView>>>,
@@ -214,6 +217,8 @@ struct SavedTab {
     pr_filter: PrFilter,
     pr: Option<u64>,
     pr_page: PrPage,
+    issue_filter: IssueFilter,
+    issue: Option<u64>,
     workflow: Option<u64>,
     run: Option<u64>,
     job: Option<u64>,
@@ -246,6 +251,8 @@ impl SavedTab {
             pr_filter: t.pr_filter,
             pr: t.pr,
             pr_page: t.pr_page,
+            issue_filter: t.issue_filter,
+            issue: t.issue,
             workflow: t.workflow,
             run: t.run,
             job: t.job,
@@ -261,6 +268,8 @@ impl SavedTab {
         t.pr_filter = self.pr_filter;
         t.pr = self.pr;
         t.pr_page = self.pr_page;
+        t.issue_filter = self.issue_filter;
+        t.issue = self.issue;
         t.workflow = self.workflow;
         t.run = self.run;
         t.job = self.job;
@@ -282,6 +291,8 @@ pub struct Tab {
     pub pr_filter: PrFilter,
     pub pr: Option<u64>,
     pub pr_page: PrPage,
+    pub issue_filter: IssueFilter,
+    pub issue: Option<u64>,
     pub workflow: Option<u64>,
     pub run: Option<u64>,
     pub job: Option<u64>,
@@ -517,6 +528,8 @@ impl Workspace {
             pr_filter: PrFilter::Open,
             pr: None,
             pr_page: PrPage::Conversation,
+            issue_filter: IssueFilter::Open,
+            issue: None,
             workflow: None,
             run: None,
             job: None,
@@ -573,6 +586,8 @@ impl Workspace {
         tab.pr_filter = src.pr_filter;
         tab.pr = src.pr;
         tab.pr_page = src.pr_page;
+        tab.issue_filter = src.issue_filter;
+        tab.issue = src.issue;
         tab.workflow = src.workflow;
         tab.run = src.run;
         tab.job = src.job;
@@ -717,6 +732,7 @@ impl Workspace {
             trim(&mut d.blame, 30);
             trim(&mut d.tree, 60);
             trim(&mut d.folder, 60);
+            trim(&mut d.issue, 30);
             trim(&mut d.pull, 30);
             trim(&mut d.pull_diff, 10);
             trim(&mut d.commit, 30);
@@ -853,6 +869,28 @@ impl Workspace {
                                 diff: Arc::new(DiffView::new(c.files)),
                             }))
                         },
+                        cx,
+                    );
+                }
+            }
+            View::Issues => {
+                let t = self.current().unwrap();
+                let (filter, issue) = (t.issue_filter, t.issue);
+                let s = slug.clone();
+                self.fetch(
+                    &key,
+                    move |d| d.issues.entry(filter).or_default(),
+                    force,
+                    move || gh::issues(&s, filter),
+                    cx,
+                );
+                if let Some(n) = issue {
+                    let s = slug.clone();
+                    self.fetch(
+                        &key,
+                        move |d| d.issue.entry(n).or_default(),
+                        force,
+                        move || gh::issue(&s, n),
                         cx,
                     );
                 }
@@ -1493,6 +1531,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
                     .unwrap_or_default()
             }
             View::Commits => t.commit = None,
+            View::Issues => t.issue = None,
             View::Pulls => (t.pr, t.line_target) = (None, None),
             View::Actions if t.log_open => t.log_open = false,
             View::Actions => t.run = None,
@@ -1508,6 +1547,13 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
         let Some(t) = self.current() else { return };
         if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.line_target.is_some()) {
             self.submit_line(n, cx);
+            return;
+        }
+        if let (View::Issues, Some(n)) = (t.view, t.issue) {
+            let body = t.composer.read(cx).value().trim().to_string();
+            if !body.is_empty() {
+                self.issue_action(n, gh::IssueAction::Comment(body), cx);
+            }
             return;
         }
         if let (View::Pulls, Some(n)) = (t.view, t.pr) {
