@@ -3,7 +3,7 @@
 use super::ui::*;
 use super::*;
 use crate::{
-    gh::RunAction,
+    gh::{InputKind, RunAction, WorkflowInput},
     icons::Glyph,
     menu::{Entry, Item},
     util,
@@ -12,13 +12,88 @@ use gpui::prelude::FluentBuilder;
 use gpui_component::{
     Disableable,
     IconName, Sizable,
-    button::{Button, ButtonVariants},
-    input::Input,
+    button::{Button, ButtonVariants, DropdownButton},
+    input::{Input, InputState},
+    menu::PopupMenuItem,
     resizable::*,
+    switch::Switch,
 };
 
 const LOG_ROW: f32 = 20.;
 const RUN_ROW: f32 = 60.;
+/// How often the open run's jobs are re-read while it is running.
+const JOBS_POLL: Duration = Duration::from_secs(3);
+
+/// The inline panel that starts a workflow with inputs. It lives on the tab and
+/// is not saved with the session.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum DispatchPanel {
+    #[default]
+    Closed,
+    /// The workflow to run and the branch it runs on. Its fields are on the tab.
+    Open { workflow: u64, branch: String },
+}
+
+/// One input on the open panel: its definition, and what is entered for it.
+pub struct DispatchField {
+    pub input: WorkflowInput,
+    pub value: FieldValue,
+}
+
+pub enum FieldValue {
+    Text(Entity<InputState>),
+    Flag(bool),
+    /// An index into the choice's options.
+    Pick(usize),
+}
+
+impl FieldValue {
+    fn read(&self, cx: &App) -> Value {
+        match self {
+            FieldValue::Text(e) => Value::Text(e.read(cx).value().to_string()),
+            FieldValue::Flag(on) => Value::Flag(*on),
+            FieldValue::Pick(i) => Value::Pick(*i),
+        }
+    }
+}
+
+/// A field's value as plain data, read out of its entity when the run starts.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Text(String),
+    Flag(bool),
+    Pick(usize),
+}
+
+/// The `name=value` pairs a run sends, or why it can't start yet. Optional text
+/// left empty is not sent, so the workflow's own default applies.
+pub fn dispatch_pairs(fields: &[(WorkflowInput, Value)]) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for (input, value) in fields {
+        match (&input.kind, value) {
+            (_, Value::Flag(on)) => out.push((input.name.clone(), on.to_string())),
+            (InputKind::Choice(options), Value::Pick(i)) => {
+                let option = options.get(*i).ok_or_else(|| format!("Pick a value for {}", input.name))?;
+                out.push((input.name.clone(), option.clone()));
+            }
+            (kind, Value::Text(text)) => {
+                let text = text.trim();
+                if text.is_empty() {
+                    if input.required {
+                        return Err(format!("{} is required", input.name));
+                    }
+                    continue;
+                }
+                if *kind == InputKind::Number && text.parse::<f64>().is_err() {
+                    return Err(format!("{} must be a number", input.name));
+                }
+                out.push((input.name.clone(), text.to_string()));
+            }
+            _ => return Err(format!("{} has no value", input.name)),
+        }
+    }
+    Ok(out)
+}
 
 impl Workspace {
     pub(super) fn actions_view(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -40,7 +115,7 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             if prompt.await == Ok(0) {
                 let _ = this.update(cx, |s, cx| {
-                    s.run_action(0, RunAction::Dispatch { workflow, reference: branch }, cx)
+                    s.run_action(0, RunAction::Dispatch { workflow, reference: branch, inputs: Vec::new() }, cx)
                 });
             }
         })
@@ -131,10 +206,18 @@ impl Workspace {
                 {
                     for wf in list.iter().filter(|w| w.dispatchable) {
                         let (id, name, w) = (wf.id, wf.name.clone(), weak.clone());
+                        let has_inputs = !wf.inputs.is_empty();
                         out.push(Entry::Item(Item::new(wf.name.clone()).icon(Glyph::Workflow).detail(wf.path.rsplit('/').next().unwrap_or("").to_string()).on_click(
                             move |win, cx| {
                                 let name = name.clone();
-                                let _ = w.update(cx, |s, cx| s.confirm_dispatch(id, name, win, cx));
+                                let _ = w.update(cx, |s, cx| {
+                                    // A workflow with inputs gets the panel; the others start at once.
+                                    if has_inputs {
+                                        s.open_dispatch(id, win, cx)
+                                    } else {
+                                        s.confirm_dispatch(id, name, win, cx)
+                                    }
+                                });
                             },
                         )));
                     }
@@ -180,6 +263,7 @@ impl Workspace {
             .size_full()
             .bg(rgb(colors.background))
             .child(header)
+            .children(self.dispatch_panel(t, cx))
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }
@@ -626,6 +710,303 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Open the panel for a workflow that takes inputs, aimed at the default branch.
+    /// Opening the workflow already open keeps what was typed.
+    pub(super) fn open_dispatch(&mut self, workflow: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        if matches!(&t.dispatch, DispatchPanel::Open { workflow: open, .. } if *open == workflow) {
+            return;
+        }
+        let repo = t.repo.clone();
+        let Some(wf) = self
+            .data(&repo)
+            .and_then(|d| d.workflows.data.as_ref())
+            .and_then(|list| list.iter().find(|w| w.id == workflow))
+            .cloned()
+        else {
+            return;
+        };
+        let branch = self.default_branch(&repo).unwrap_or_default();
+        let fields = wf
+            .inputs
+            .into_iter()
+            .map(|spec| {
+                let value = match &spec.kind {
+                    InputKind::Boolean => FieldValue::Flag(spec.default == "true"),
+                    InputKind::Choice(options) => FieldValue::Pick(options.iter().position(|o| *o == spec.default).unwrap_or(0)),
+                    _ => FieldValue::Text(input(&spec.default, &spec.description, window, cx)),
+                };
+                DispatchField { input: spec, value }
+            })
+            .collect();
+        let Some(t) = self.current_mut() else { return };
+        t.dispatch = DispatchPanel::Open { workflow, branch };
+        t.dispatch_fields = fields;
+        cx.notify();
+    }
+
+    fn close_dispatch(&mut self, cx: &mut Context<Self>) {
+        if let Some(t) = self.current_mut() {
+            t.dispatch = DispatchPanel::Closed;
+            t.dispatch_fields.clear();
+        }
+        cx.notify();
+    }
+
+    fn set_dispatch_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if let Some(DispatchPanel::Open { branch, .. }) = self.current_mut().map(|t| &mut t.dispatch) {
+            *branch = name;
+        }
+        cx.notify();
+    }
+
+    fn set_dispatch_flag(&mut self, field: usize, on: bool, cx: &mut Context<Self>) {
+        if let Some(FieldValue::Flag(value)) = self.current_mut().and_then(|t| t.dispatch_fields.get_mut(field)).map(|f| &mut f.value) {
+            *value = on;
+        }
+        cx.notify();
+    }
+
+    fn set_dispatch_pick(&mut self, field: usize, choice: usize, cx: &mut Context<Self>) {
+        if let Some(f) = self.current_mut().and_then(|t| t.dispatch_fields.get_mut(field)) {
+            f.value = FieldValue::Pick(choice);
+        }
+        cx.notify();
+    }
+
+    /// Start the run through `mutate`. The panel closes once GitHub accepts it, so a
+    /// refused run keeps what was typed.
+    fn submit_dispatch(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        let DispatchPanel::Open { workflow, branch } = t.dispatch.clone() else { return };
+        let values = t.dispatch_fields.iter().map(|f| (f.input.clone(), f.value.read(cx))).collect::<Vec<_>>();
+        let Ok(inputs) = dispatch_pairs(&values) else { return };
+        let Some(repo) = self.repo(&t.repo).cloned() else { return };
+        let (key, slug, tab) = (repo.key(), repo.slug(), t.id);
+        let label = format!("Starting workflow on {branch}");
+        self.mutate(
+            label,
+            move || gh::run_action(&slug, 0, &RunAction::Dispatch { workflow, reference: branch, inputs }),
+            move |s, cx| {
+                if let Some(t) = s.tabs.iter_mut().find(|t| t.id == tab) {
+                    t.dispatch = DispatchPanel::Closed;
+                    t.dispatch_fields.clear();
+                }
+                if let Some(d) = s.data.get_mut(&key) {
+                    d.runs.clear();
+                }
+                s.last_poll = Instant::now();
+                s.ensure(false, cx);
+            },
+            cx,
+        );
+    }
+
+    /// The panel above the run list, for a workflow that takes inputs. It sits
+    /// inline, like the release draft, not in a modal.
+    fn dispatch_panel(&self, t: &Tab, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let DispatchPanel::Open { workflow, branch } = &t.dispatch else { return None };
+        let colors = palette(cx);
+        let name = self
+            .data(&t.repo)
+            .and_then(|d| d.workflows.data.as_ref())
+            .and_then(|list| list.iter().find(|w| w.id == *workflow))
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| "workflow".into());
+        let values = t.dispatch_fields.iter().map(|f| (f.input.clone(), f.value.read(cx))).collect::<Vec<_>>();
+        let check = dispatch_pairs(&values);
+        let hint = check.as_ref().err().cloned().unwrap_or_default();
+        let weak = cx.weak_entity();
+        let branch_picker = self.popover_button(
+            "dispatch-branch",
+            Button::new("dispatch-branch-trigger")
+                .label(branch.clone())
+                .icon(icon(Glyph::Branch).text_color(rgb(colors.muted)))
+                .outline()
+                .small()
+                .dropdown_caret(true),
+            Some("Find a branch…"),
+            320.,
+            |s, weak, _| {
+                let Some(t) = s.current() else { return vec![] };
+                let DispatchPanel::Open { branch, .. } = &t.dispatch else { return vec![] };
+                let current = branch.clone();
+                let Some(list) = s.data(&t.repo).and_then(|d| d.branches.data.as_ref()) else {
+                    return vec![Entry::Item(Item::new("Loading branches…").disabled(true))];
+                };
+                let default = s.default_branch(&t.repo);
+                let mut sorted = list.iter().collect::<Vec<_>>();
+                // Default first, then alphabetical, as the Code view lists them.
+                sorted.sort_by_key(|b| (Some(&b.name) != default.as_ref(), b.name.to_lowercase()));
+                let mut out = vec![Entry::Label(format!("Branches · {}", list.len()).into())];
+                for b in sorted {
+                    let (name, w) = (b.name.clone(), weak.clone());
+                    out.push(Entry::Item(
+                        Item::new(b.name.clone())
+                            .icon(if b.protected { Glyph::Lock } else { Glyph::Branch })
+                            .checked(b.name == current)
+                            .detail(if Some(&b.name) == default.as_ref() { "default" } else { "" })
+                            .on_click(move |_, cx| {
+                                let name = name.clone();
+                                let _ = w.update(cx, |s, cx| s.set_dispatch_branch(name, cx));
+                            }),
+                    ));
+                }
+                out
+            },
+            cx,
+        );
+        let mut form = col().gap_3().child(field(colors, "Branch", branch_picker));
+        for (i, f) in t.dispatch_fields.iter().enumerate() {
+            form = form.child(self.dispatch_field(i, f, &weak, colors));
+        }
+        let busy = self.busy.is_some();
+        let footer = row()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.))
+                    .text_color(rgb(colors.muted))
+                    .child(hint),
+            )
+            .child(button("dispatch-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.close_dispatch(cx))))
+            .child(
+                Button::new("dispatch-run")
+                    .label("Run workflow")
+                    .primary()
+                    .small()
+                    .loading(self.busy_with("Starting workflow"))
+                    .disabled(busy || check.is_err())
+                    .on_click(cx.listener(|s, _, _, cx| s.submit_dispatch(cx))),
+            );
+        Some(
+            col()
+                .px_4()
+                .pt_4()
+                .child(
+                    card(colors)
+                        .child(
+                            row()
+                                .h(px(BAR))
+                                .px_4()
+                                .border_b_1()
+                                .border_color(rgb(colors.row_border))
+                                .child(section(colors, format!("Run {name}"))),
+                        )
+                        .child(col().p_4().gap_3().child(form).child(footer)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// One input's control: text, a switch, or a dropdown of its options.
+    fn dispatch_field(&self, i: usize, f: &DispatchField, weak: &WeakEntity<Self>, colors: Palette) -> Div {
+        let control = match &f.value {
+            FieldValue::Text(entity) => Input::new(entity).small().into_any_element(),
+            FieldValue::Flag(on) => {
+                let weak = weak.clone();
+                Switch::new(("dispatch-flag", i as u64))
+                    .checked(*on)
+                    .on_click(move |on: &bool, _, cx| {
+                        let on = *on;
+                        let _ = weak.update(cx, |s, cx| s.set_dispatch_flag(i, on, cx));
+                    })
+                    .into_any_element()
+            }
+            FieldValue::Pick(sel) => {
+                let options = match &f.input.kind {
+                    InputKind::Choice(options) => options.clone(),
+                    _ => Vec::new(),
+                };
+                let (weak, sel) = (weak.clone(), *sel);
+                let current = options.get(sel).cloned().unwrap_or_default();
+                DropdownButton::new(("dispatch-choice", i as u64))
+                    .button(
+                        Button::new(("dispatch-choice-trigger", i as u64))
+                            .label(current)
+                            .outline()
+                            .small(),
+                    )
+                    .dropdown_menu(move |menu, _, _| {
+                        options.iter().enumerate().fold(menu, |menu, (j, option)| {
+                            let weak = weak.clone();
+                            menu.item(PopupMenuItem::new(option.clone()).checked(j == sel).on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |s, cx| s.set_dispatch_pick(i, j, cx));
+                            }))
+                        })
+                    })
+                    .into_any_element()
+            }
+        };
+        col()
+            .min_w_0()
+            .gap_1()
+            .child(label(colors, f.input.name.clone()))
+            .child(control)
+            .when(!f.input.description.is_empty(), |s| s.child(label(colors, f.input.description.clone())))
+    }
+
+    /// Re-read the open run's jobs every few seconds while it runs, and load the
+    /// selected job's log once that job has finished.
+    pub(super) fn poll_jobs(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        if t.view != View::Actions {
+            return;
+        }
+        let (Some(run), key) = (t.run, t.repo.clone()) else { return };
+        let Some(slug) = self.repo(&key).map(|r| r.slug()) else { return };
+        if self.run_active(&key, run) && self.last_jobs_poll.elapsed() >= JOBS_POLL {
+            self.last_jobs_poll = Instant::now();
+            let s = slug.clone();
+            self.fetch(&key, move |d| d.jobs.entry(run).or_default(), true, move || gh::jobs(&s, run), cx);
+        }
+        self.ensure_job_log(&key, &slug, run, false, cx);
+    }
+
+    /// Whether the run is queued or running, by its own status or by any of its jobs.
+    fn run_active(&self, key: &str, run: u64) -> bool {
+        let Some(d) = self.data(key) else { return false };
+        let listed = d
+            .runs
+            .values()
+            .filter_map(|l| l.data.as_ref())
+            .flatten()
+            .any(|r| r.database_id == run && r.active());
+        listed
+            || d.jobs
+                .get(&run)
+                .and_then(|l| l.data.as_ref())
+                .is_some_and(|jobs| jobs.iter().any(gh::Job::active))
+    }
+
+    /// Load the log of the selected job, once it has finished. GitHub serves no log
+    /// for a job that is still running.
+    pub(super) fn ensure_job_log(&mut self, key: &str, slug: &str, run: u64, force: bool, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        if !t.log_open {
+            return;
+        }
+        let jobs = self.data(key).and_then(|d| d.jobs.get(&run)).and_then(|l| l.data.as_ref());
+        let Some(job) = t.job.or_else(|| jobs?.first().map(|j| j.database_id)) else { return };
+        let finished = jobs.is_some_and(|jobs| jobs.iter().any(|j| j.database_id == job && !j.active()));
+        if !finished {
+            return;
+        }
+        let (key, s) = (key.to_string(), slug.to_string());
+        self.fetch(
+            &key,
+            move |d| d.log.entry(job).or_default(),
+            force,
+            move || Ok(Arc::new(load_log(gh::job_log(&s, job)?))),
+            cx,
+        );
+    }
+}
+
 /// The rows of a log that `query` keeps, as indices into `rows`. A line is kept
 /// when it contains the query, ignoring case. A step header is kept when some
 /// line under it is. An empty query keeps everything.
@@ -663,7 +1044,59 @@ pub fn match_count<S: AsRef<str>>(rows: &[(bool, S)], shown: &[usize]) -> usize 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob brings in its own `test` macro.
-    use super::{filter_log, match_count};
+    use super::{dispatch_pairs, filter_log, match_count, Value};
+    use crate::gh::{InputKind, WorkflowInput};
+
+    fn spec(name: &str, required: bool, kind: InputKind) -> WorkflowInput {
+        WorkflowInput {
+            name: name.into(),
+            description: String::new(),
+            required,
+            default: String::new(),
+            kind,
+        }
+    }
+    fn text(s: &str) -> Value {
+        Value::Text(s.into())
+    }
+
+    #[test]
+    fn a_required_input_must_be_filled() {
+        let fields = [(spec("service", true, InputKind::Text), text("   "))];
+        assert_eq!(dispatch_pairs(&fields), Err("service is required".to_string()));
+        let fields = [(spec("service", true, InputKind::Text), text(" api "))];
+        assert_eq!(dispatch_pairs(&fields), Ok(vec![("service".to_string(), "api".to_string())]));
+    }
+
+    #[test]
+    fn an_empty_optional_input_is_left_out() {
+        let fields = [
+            (spec("note", false, InputKind::Text), text("")),
+            (spec("tag", false, InputKind::Environment), text("prod")),
+        ];
+        assert_eq!(dispatch_pairs(&fields), Ok(vec![("tag".to_string(), "prod".to_string())]));
+    }
+
+    #[test]
+    fn numbers_must_parse() {
+        let number = spec("replicas", false, InputKind::Number);
+        assert_eq!(dispatch_pairs(&[(number.clone(), text("3.5"))]), Ok(vec![("replicas".to_string(), "3.5".to_string())]));
+        assert_eq!(dispatch_pairs(&[(number, text("three"))]), Err("replicas must be a number".to_string()));
+    }
+
+    #[test]
+    fn flags_and_choices_send_their_value() {
+        let options = InputKind::Choice(vec!["patch".into(), "minor".into()]);
+        let fields = [
+            (spec("dry_run", false, InputKind::Boolean), Value::Flag(false)),
+            (spec("bump", true, options.clone()), Value::Pick(1)),
+        ];
+        assert_eq!(
+            dispatch_pairs(&fields),
+            Ok(vec![("dry_run".to_string(), "false".to_string()), ("bump".to_string(), "minor".to_string())])
+        );
+        assert!(dispatch_pairs(&[(spec("bump", true, options), Value::Pick(9))]).is_err());
+    }
 
     fn log(lines: &[(bool, &'static str)]) -> Vec<(bool, &'static str)> {
         lines.to_vec()

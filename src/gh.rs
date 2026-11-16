@@ -1491,9 +1491,12 @@ pub struct Workflow {
     pub state: String,
     #[serde(default)]
     pub path: String,
-    /// Declares a `workflow_dispatch` trigger, so it can be run by hand (filled separately).
+    /// Declares a `workflow_dispatch` trigger, so it can be run by hand.
     #[serde(skip)]
     pub dispatchable: bool,
+    /// The inputs a manual run asks for. Empty when there are none.
+    #[serde(skip)]
+    pub inputs: Vec<WorkflowInput>,
 }
 /// Every workflow, with whether it can be started manually. GitHub only offers
 /// "Run workflow" for files on the default branch that declare
@@ -1513,19 +1516,26 @@ pub fn workflows(slug: &str) -> Result<Vec<Workflow>> {
                 scope.spawn(move || {
                     crate::cache::inherit(cached, || {
                         readable
-                            && gh(&[
-                            "api",
-                            "-H",
-                            "Accept: application/vnd.github.raw",
-                            &format!("repos/{slug}/contents/{path}"),
-                        ])
-                        .is_ok_and(|yaml| declares_dispatch(&yaml))
+                            .then(|| {
+                                gh(&[
+                                    "api",
+                                    "-H",
+                                    "Accept: application/vnd.github.raw",
+                                    &format!("repos/{slug}/contents/{path}"),
+                                ])
+                                .ok()
+                            })
+                            .flatten()
+                            .map(|yaml| (declares_dispatch(&yaml), dispatch_inputs(&yaml)))
+                            .unwrap_or_default()
                     })
                 })
             })
             .collect::<Vec<_>>();
         for (w, check) in list.iter_mut().zip(checks) {
-            w.dispatchable = check.join().unwrap_or(false);
+            let (dispatch, inputs) = check.join().unwrap_or_default();
+            w.dispatchable = dispatch;
+            w.inputs = inputs;
         }
     });
     Ok(list)
@@ -1539,6 +1549,184 @@ pub fn declares_dispatch(yaml: &str) -> bool {
         code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .any(|word| word == "workflow_dispatch")
     })
+}
+
+/// One input of a `workflow_dispatch` trigger, as the run form asks for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowInput {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    /// The default as written in the file; empty when there is none.
+    pub default: String,
+    pub kind: InputKind,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputKind {
+    /// `string`, and any type this app doesn't know.
+    Text,
+    Number,
+    /// Typed in as text, since the environment list is not fetched here.
+    Environment,
+    Boolean,
+    Choice(Vec<String>),
+}
+
+/// The inputs of `on: workflow_dispatch: inputs:` in a workflow file. Only the
+/// block-style layout is read; a flow-style `inputs: {…}` gives none. A file
+/// without such a block gives an empty list.
+pub fn dispatch_inputs(yaml: &str) -> Vec<WorkflowInput> {
+    let top = yaml_entries(&yaml_lines(yaml));
+    let Some(on) = yaml_child(&top, "on") else { return Vec::new() };
+    let on = yaml_entries(&on.body);
+    let Some(dispatch) = yaml_child(&on, "workflow_dispatch") else { return Vec::new() };
+    let dispatch = yaml_entries(&dispatch.body);
+    let Some(inputs) = yaml_child(&dispatch, "inputs") else { return Vec::new() };
+    yaml_entries(&inputs.body).iter().map(workflow_input).collect()
+}
+
+/// A line of a workflow file: how far it is indented, and its text. Blank lines
+/// and comments are dropped.
+#[derive(Clone, Debug)]
+struct YamlLine {
+    indent: usize,
+    text: String,
+}
+
+/// A `key: value` line and the lines indented under it.
+#[derive(Clone, Debug)]
+struct YamlEntry {
+    key: String,
+    value: String,
+    body: Vec<YamlLine>,
+}
+
+fn yaml_lines(yaml: &str) -> Vec<YamlLine> {
+    yaml.lines()
+        .filter_map(|raw| {
+            let code = strip_comment(raw);
+            let text = code.trim();
+            (!text.is_empty() && text != "---").then(|| YamlLine {
+                indent: code.len() - code.trim_start().len(),
+                text: text.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The line without a trailing comment. A `#` starts one only at the start of the
+/// line or after a space, and never inside quotes. A quote only opens where a
+/// value could start, so an apostrophe in `Don't` is just a character.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut prev = ' ';
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '#' && prev.is_whitespace() => return &line[..i],
+            None if (c == '\'' || c == '"') && (prev.is_whitespace() || matches!(prev, ':' | '[' | ',' | '{')) => {
+                quote = Some(c)
+            }
+            None => {}
+        }
+        prev = c;
+    }
+    line
+}
+
+/// The entries at the indent of the first line. A `- item` at that indent is not
+/// an entry; it belongs to the key above it, as YAML allows for list values.
+fn yaml_entries(lines: &[YamlLine]) -> Vec<YamlEntry> {
+    let Some(base) = lines.first().map(|l| l.indent) else { return Vec::new() };
+    let starts: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].indent == base && !lines[i].text.starts_with('-'))
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &start)| {
+            let end = starts.get(k + 1).copied().unwrap_or(lines.len());
+            let (key, value) = split_key(&lines[start].text)?;
+            Some(YamlEntry {
+                key,
+                value,
+                body: lines[start + 1..end].to_vec(),
+            })
+        })
+        .collect()
+}
+
+/// Split `key: value`. The colon must be followed by a space or the end of the line,
+/// so `https://…` in a value is not mistaken for a key.
+fn split_key(text: &str) -> Option<(String, String)> {
+    if text.starts_with('-') {
+        return None;
+    }
+    let colon = text
+        .char_indices()
+        .find(|&(i, c)| c == ':' && text[i + 1..].chars().next().is_none_or(char::is_whitespace))?
+        .0;
+    Some((unquote(&text[..colon]), unquote(&text[colon + 1..])))
+}
+
+fn unquote(s: &str) -> String {
+    let s = s.trim();
+    if let Some(inner) = s.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
+        return inner.replace("''", "'");
+    }
+    if let Some(inner) = s.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        return inner.to_string();
+    }
+    s.to_string()
+}
+
+fn yaml_child<'a>(entries: &'a [YamlEntry], key: &str) -> Option<&'a YamlEntry> {
+    entries.iter().find(|e| e.key == key)
+}
+
+fn workflow_input(entry: &YamlEntry) -> WorkflowInput {
+    let kids = yaml_entries(&entry.body);
+    let text = |key: &str| yaml_child(&kids, key).map(|e| unquote(&e.value)).unwrap_or_default();
+    let kind = match text("type").as_str() {
+        "boolean" => InputKind::Boolean,
+        "number" => InputKind::Number,
+        "environment" => InputKind::Environment,
+        "choice" => InputKind::Choice(yaml_child(&kids, "options").map(yaml_options).unwrap_or_default()),
+        _ => InputKind::Text,
+    };
+    WorkflowInput {
+        name: entry.key.clone(),
+        description: yaml_child(&kids, "description").map(yaml_text).unwrap_or_default(),
+        required: text("required") == "true",
+        default: text("default"),
+        kind,
+    }
+}
+
+/// A scalar, or a block scalar (`|`, `>`) folded onto one line.
+fn yaml_text(entry: &YamlEntry) -> String {
+    let value = entry.value.trim();
+    if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+        entry.body.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ")
+    } else {
+        unquote(value)
+    }
+}
+
+/// A choice's options, as a flow list (`[a, b]`) or a block list of `- item` lines.
+fn yaml_options(entry: &YamlEntry) -> Vec<String> {
+    let value = entry.value.trim();
+    if let Some(flow) = value.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        return flow.split(',').map(unquote).filter(|s| !s.is_empty()).collect();
+    }
+    entry
+        .body
+        .iter()
+        .filter_map(|l| l.text.strip_prefix('-'))
+        .map(unquote)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -1571,6 +1759,12 @@ pub struct Job {
     pub completed_at: Option<String>,
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+impl Job {
+    /// Queued or running, so its steps and log are still changing.
+    pub fn active(&self) -> bool {
+        !self.status.eq_ignore_ascii_case("completed")
+    }
 }
 pub fn jobs(slug: &str, run: u64) -> Result<Vec<Job>> {
     #[derive(Deserialize)]
@@ -1628,7 +1822,12 @@ pub enum RunAction {
     Rerun,
     RerunFailed,
     Cancel,
-    Dispatch { workflow: u64, reference: String },
+    /// `inputs` are sent as `-f name=value`; a workflow without inputs gets none.
+    Dispatch {
+        workflow: u64,
+        reference: String,
+        inputs: Vec<(String, String)>,
+    },
 }
 pub fn run_action(slug: &str, run: u64, action: &RunAction) -> Result<String> {
     let id = run.to_string();
@@ -1639,15 +1838,16 @@ pub fn run_action(slug: &str, run: u64, action: &RunAction) -> Result<String> {
         RunAction::Dispatch {
             workflow,
             reference,
-        } => gh(&[
-            "workflow",
-            "run",
-            &workflow.to_string(),
-            "--ref",
-            reference,
-            "-R",
-            slug,
-        ]),
+            inputs,
+        } => {
+            let workflow = workflow.to_string();
+            let mut args = vec!["workflow", "run", workflow.as_str(), "--repo", slug, "--ref", reference.as_str()];
+            let fields = inputs.iter().map(|(name, value)| format!("{name}={value}")).collect::<Vec<_>>();
+            for field in &fields {
+                args.extend(["-f", field.as_str()]);
+            }
+            gh(&args)
+        }
     }
 }
 
@@ -1793,6 +1993,162 @@ mod tests {
         assert!(!declares_dispatch("on:\n  push:\n  # workflow_dispatch:\n"));
         assert!(!declares_dispatch("on: workflow_dispatched_elsewhere"));
         assert!(!declares_dispatch("on: [push, pull_request]"));
+    }
+    #[test]
+    fn reads_dispatch_inputs_with_and_without_defaults() {
+        let yaml = r#"name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: string
+      replicas:
+        description: "How many replicas"  # per region
+        required: false
+        default: 3
+        type: number
+      target:
+        description: Target environment
+        required: true
+        default: staging
+        type: environment
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+"#;
+        let inputs = dispatch_inputs(yaml);
+        assert_eq!(
+            inputs,
+            vec![
+                WorkflowInput {
+                    name: "service".into(),
+                    description: "Service to deploy".into(),
+                    required: true,
+                    default: String::new(),
+                    kind: InputKind::Text,
+                },
+                WorkflowInput {
+                    name: "replicas".into(),
+                    description: "How many replicas".into(),
+                    required: false,
+                    default: "3".into(),
+                    kind: InputKind::Number,
+                },
+                WorkflowInput {
+                    name: "target".into(),
+                    description: "Target environment".into(),
+                    required: true,
+                    default: "staging".into(),
+                    kind: InputKind::Environment,
+                },
+            ]
+        );
+    }
+    #[test]
+    fn reads_choice_and_boolean_inputs_with_block_lists() {
+        let yaml = r#"name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+        default: minor
+        required: true
+      dry_run:
+        description: "Build without publishing"
+        type: boolean
+        default: true
+      notes:
+        description: >-
+          Extra lines for
+          the release notes
+jobs:
+  release:
+    runs-on: ubuntu-latest
+"#;
+        let inputs = dispatch_inputs(yaml);
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0].kind, InputKind::Choice(vec!["patch".into(), "minor".into(), "major".into()]));
+        assert_eq!((inputs[0].default.as_str(), inputs[0].required), ("minor", true));
+        assert_eq!(inputs[1].kind, InputKind::Boolean);
+        assert_eq!((inputs[1].default.as_str(), inputs[1].description.as_str()), ("true", "Build without publishing"));
+        assert_eq!(inputs[2].name, "notes");
+        assert_eq!(inputs[2].kind, InputKind::Text);
+        assert_eq!(inputs[2].description, "Extra lines for the release notes");
+        assert!(!inputs[2].required);
+    }
+    #[test]
+    fn workflows_without_inputs_read_as_none() {
+        let list_form = "name: CI\non: [push, workflow_dispatch]\njobs:\n  test:\n    runs-on: ubuntu-latest\n";
+        let scalar_form = "name: Manual\non: workflow_dispatch\njobs:\n  go:\n    runs-on: ubuntu-latest\n";
+        let no_inputs = "name: Manual\non:\n  workflow_dispatch:\njobs:\n  go:\n    runs-on: ubuntu-latest\n";
+        let empty_map = "on:\n  workflow_dispatch:\n    inputs: {}\njobs: {}\n";
+        for yaml in [list_form, scalar_form, no_inputs, empty_map] {
+            assert!(dispatch_inputs(yaml).is_empty(), "{yaml}");
+        }
+        assert!(declares_dispatch(list_form) && declares_dispatch(scalar_form));
+    }
+    #[test]
+    fn reads_quoted_on_key_and_flow_options_with_hashes() {
+        let yaml = r#""on":
+  schedule:
+    - cron: '0 6 * * *'  # daily
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel #2 or beta'
+        type: choice
+        options: [stable, "beta", nightly]   # flow list
+        default: 'beta'
+"#;
+        let inputs = dispatch_inputs(yaml);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].description, "Release channel #2 or beta");
+        assert_eq!(inputs[0].kind, InputKind::Choice(vec!["stable".into(), "beta".into(), "nightly".into()]));
+        assert_eq!(inputs[0].default, "beta");
+    }
+    #[test]
+    fn parses_job_steps_while_running() {
+        let sample = r#"{"databaseId":9,"name":"build","status":"in_progress","conclusion":"",
+            "startedAt":"2026-11-16T10:00:00Z","completedAt":null,
+            "steps":[
+              {"name":"Set up job","status":"completed","conclusion":"success","number":1,
+               "startedAt":"2026-11-16T10:00:00Z","completedAt":"2026-11-16T10:00:03Z"},
+              {"name":"Run tests","status":"in_progress","conclusion":"","number":2,
+               "startedAt":"2026-11-16T10:00:03Z","completedAt":null},
+              {"name":"Upload","status":"queued","conclusion":"","number":3,
+               "startedAt":null,"completedAt":null},
+              {"name":"Deploy","status":"completed","conclusion":"skipped","number":4,
+               "startedAt":null,"completedAt":null}
+            ]}"#;
+        let job: Job = json(sample).unwrap();
+        assert!(job.active());
+        let steps = job
+            .steps
+            .iter()
+            .map(|s| (s.number, s.name.as_str(), s.status.as_str(), s.conclusion.as_str(), s.started_at.is_some()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            steps,
+            vec![
+                (1, "Set up job", "completed", "success", true),
+                (2, "Run tests", "in_progress", "", true),
+                (3, "Upload", "queued", "", false),
+                (4, "Deploy", "completed", "skipped", false),
+            ]
+        );
+        let done: Job = json(r#"{"databaseId":9,"name":"build","status":"completed","conclusion":"failure","steps":[]}"#).unwrap();
+        assert!(!done.active());
+        assert!(done.steps.is_empty());
     }
     #[test]
     fn groups_review_threads() {
