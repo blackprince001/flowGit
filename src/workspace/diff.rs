@@ -19,6 +19,8 @@ pub struct Review {
     pub threads: HashMap<LineTarget, usize>,
     /// Where multi-line threads begin, by the line they end on.
     pub starts: HashMap<LineTarget, LineTarget>,
+    /// Pending review comments per line, not yet sent.
+    pub drafts: HashMap<LineTarget, usize>,
     /// The selected diff rows, first to last.
     pub rows: Option<(usize, usize)>,
 }
@@ -37,7 +39,16 @@ impl Review {
                 }
             }
         }
-        Self { threads: map, starts, rows }
+        Self {
+            threads: map,
+            starts,
+            drafts: HashMap::new(),
+            rows,
+        }
+    }
+    pub fn with_drafts(mut self, drafts: HashMap<LineTarget, usize>) -> Self {
+        self.drafts = drafts;
+        self
     }
 }
 /// Where a thread sits in the current diff; outdated threads have no line.
@@ -241,6 +252,7 @@ impl Workspace {
                                 let target = rv.as_ref().and_then(|_| line_target(file, line));
                                 let picked = target.is_some() && rv.as_ref().and_then(|r| r.rows).is_some_and(|(a, b)| (a..=b).contains(&i));
                                 let threads = target.as_ref().and_then(|t| rv.as_ref()?.threads.get(t).copied()).unwrap_or(0);
+                                let pending = target.as_ref().and_then(|t| rv.as_ref()?.drafts.get(t).copied()).unwrap_or(0);
                                 let comment = rv.as_ref().map(|_| {
                                     let cell = div().id(("comment-line", i)).w(px(GUTTER)).h_full().flex_shrink_0().flex().items_center().justify_center();
                                     let Some(target) = target.clone() else { return cell };
@@ -267,19 +279,20 @@ impl Workspace {
                                                     )
                                                 }),
                                         )
-                                    } else if threads > 0 {
+                                    } else if threads + pending > 0 {
+                                        // Amber while any of it is still a draft.
                                         div()
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .size(px(16.))
                                             .rounded(px(8.))
-                                            .bg(rgb(colors.blue))
+                                            .bg(rgb(if pending > 0 { colors.amber } else { colors.blue }))
                                             .text_color(rgb(colors.primary_text))
                                             .font_family(".SystemUIFont")
                                             .text_size(px(10.))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(threads.to_string())
+                                            .child((threads + pending).to_string())
                                     } else {
                                         div()
                                             .flex()

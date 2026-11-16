@@ -30,9 +30,11 @@ mod syntax;
 mod preferences;
 mod pulls;
 mod releases;
+mod review;
 mod ui;
 
 pub use compare::NewPullRequest;
+pub use review::FinishReview;
 
 actions!(
     gitflow,
@@ -317,6 +319,8 @@ pub enum Overlay {
     Prefs,
     /// `resolving` while the typed repository is being looked up.
     AddUrl { resolving: bool },
+    /// The dialog that sends a pending review, with the verdict picked so far.
+    FinishReview { event: gh::ReviewEvent },
 }
 
 struct Notice {
@@ -369,6 +373,11 @@ pub struct Workspace {
     pending_clear: Option<u64>,
     /// Likewise for a tab's line comment box.
     pending_line_clear: Option<u64>,
+    /// Clear the review summary box on the next frame.
+    pending_review_clear: bool,
+    /// Pending line comments for every pull request, whatever tabs are open.
+    drafts: review::ReviewDrafts,
+    review_body: Entity<InputState>,
     user: Load<gh::User>,
     gh_version: Load<String>,
     prefs_page: PrefsPage,
@@ -419,6 +428,12 @@ impl Workspace {
         for panels in [&sidebar_panels, &brief_panels] {
             cx.observe(panels, |_, _, cx| cx.notify()).detach();
         }
+        let review_body = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(4, 12)
+                .placeholder("Leave a summary · Markdown supported")
+        });
         let focus = cx.focus_handle();
         focus.focus(window);
         let mut s = Self {
@@ -442,6 +457,9 @@ impl Workspace {
             busy: None,
             pending_line_clear: None,
             pending_clear: None,
+            pending_review_clear: false,
+            drafts: Default::default(),
+            review_body,
             user: Load::default(),
             gh_version: Load::default(),
             prefs_page: PrefsPage::General,
@@ -1132,6 +1150,7 @@ impl Workspace {
             gh::PrAction::Checkout(_) => format!("Checking out #{number}"),
             gh::PrAction::LineComment { path, line, .. } => format!("Commenting on {path}:{line}"),
             gh::PrAction::Reply { .. } => format!("Commenting on #{number}"),
+            gh::PrAction::SubmitReview { .. } => format!("Submitting review on #{number}"),
         };
         let clears_line = matches!(action, gh::PrAction::LineComment { .. } | gh::PrAction::Reply { .. });
         let clears_composer = matches!(
@@ -1523,6 +1542,10 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             self.submit_url(false, window, cx);
             return;
         }
+        if matches!(self.overlay, Overlay::FinishReview { .. }) {
+            self.finish_review(cx);
+            return;
+        }
         let Some(t) = self.current() else { return };
         if t.view == View::Pulls && t.new_pr.is_open() {
             self.create_pull(cx);
@@ -1554,6 +1577,11 @@ impl Workspace {
             return;
         };
         let existing = pr.threads.iter().rev().find(|th| diff::thread_target(th).as_ref() == Some(&target));
+        // With a review under way, a new comment joins it instead of posting alone.
+        if existing.is_none() && self.drafts.count(&t.repo, n) > 0 {
+            self.add_draft_line(n, cx);
+            return;
+        }
         let action = match existing {
             Some(th) => gh::PrAction::Reply { to: th.root.id, body },
             None => gh::PrAction::LineComment {
