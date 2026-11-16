@@ -23,6 +23,7 @@ mod commits;
 mod diff;
 mod home;
 mod issues;
+mod mcp;
 mod palette;
 mod md;
 mod syntax;
@@ -464,6 +465,7 @@ impl Workspace {
         {
             s.open_repo(&first, window, cx);
         }
+        Self::serve_mcp(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 smol::Timer::after(Duration::from_millis(250)).await;

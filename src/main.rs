@@ -3,6 +3,7 @@ mod cache;
 mod gh;
 mod graph;
 mod icons;
+mod mcp;
 mod menu;
 mod settings;
 mod theme;
@@ -13,6 +14,14 @@ use gpui_component::{Root, TitleBar};
 use workspace::*;
 
 fn main() {
+    // `gitflow mcp`: bridge an agent's stdio to the running app, no window.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        if let Err(e) = mcp::serve_stdio() {
+            eprintln!("gitflow mcp: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Trim the disk cache off the main thread.
     std::thread::spawn(cache::prune);
     Application::new().with_assets(icons::Assets).run(move |cx| {
