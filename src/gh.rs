@@ -257,8 +257,9 @@ pub struct RepoInfo {
     pub fork_count: u64,
     #[serde(default)]
     pub watchers: Count,
-    #[serde(default)]
-    pub issues: Count,
+    /// Filled by `repo_info` from GraphQL. `gh repo view` counts closed issues too.
+    #[serde(skip)]
+    pub open_issues: Option<u64>,
     #[serde(default)]
     pub pull_requests: Count,
     #[serde(default)]
@@ -288,13 +289,39 @@ impl RepoInfo {
     }
 }
 pub fn repo_info(slug: &str) -> Result<RepoInfo> {
-    json(&gh(&[
+    let mut info: RepoInfo = json(&gh(&[
         "repo",
         "view",
         slug,
         "--json",
-        "description,url,homepageUrl,stargazerCount,forkCount,watchers,issues,pullRequests,primaryLanguage,licenseInfo,defaultBranchRef,repositoryTopics,isPrivate,isFork,isArchived,pushedAt",
+        "description,url,homepageUrl,stargazerCount,forkCount,watchers,pullRequests,primaryLanguage,licenseInfo,defaultBranchRef,repositoryTopics,isPrivate,isFork,isArchived,pushedAt",
+    ])?)?;
+    // The brief still shows without this count, so a failed lookup just leaves it out.
+    info.open_issues = open_issue_count(slug).ok();
+    Ok(info)
+}
+
+/// Open issues only. The GraphQL `issues` connection never includes pull requests.
+fn open_issue_count(slug: &str) -> Result<u64> {
+    let (owner, name) = slug.split_once('/').ok_or_else(|| anyhow!("Bad repository name"))?;
+    let query = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { issues(states: OPEN) { totalCount } } }";
+    parse_open_issues(&gh(&[
+        "api",
+        "graphql",
+        "-f",
+        &format!("query={query}"),
+        "-f",
+        &format!("owner={owner}"),
+        "-f",
+        &format!("name={name}"),
     ])?)
+}
+
+fn parse_open_issues(text: &str) -> Result<u64> {
+    let v: serde_json::Value = json(text)?;
+    v["data"]["repository"]["issues"]["totalCount"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("No open issue count in the response"))
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -1739,6 +1766,16 @@ pub fn create_draft(slug: &str, tag: &str, branch: &str, title: &str, notes: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reads_open_issue_count_from_graphql() {
+        let text = r#"{"data":{"repository":{"issues":{"totalCount":39}}}}"#;
+        assert_eq!(parse_open_issues(text).unwrap(), 39);
+    }
+    #[test]
+    fn open_issue_count_is_an_error_when_the_repository_is_missing() {
+        let text = r#"{"data":{"repository":null},"errors":[{"message":"Could not resolve to a Repository"}]}"#;
+        assert!(parse_open_issues(text).is_err());
+    }
     #[test]
     fn parses_repository_slugs() {
         let s = |a: &str, b: &str| Some((a.to_string(), b.to_string()));
