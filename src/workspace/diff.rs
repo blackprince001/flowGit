@@ -7,6 +7,7 @@ use crate::{
     icons::Glyph,
 };
 use gpui::prelude::FluentBuilder;
+use super::viewed::{FileView, ViewedInfo};
 use gpui_component::{ActiveTheme, IconName};
 use std::collections::HashMap;
 
@@ -28,6 +29,8 @@ pub struct Review {
     pub drafts: HashMap<LineTarget, usize>,
     /// The selected diff rows, first to last.
     pub rows: Option<(usize, usize)>,
+    /// Which files are marked viewed, where the diff can be marked at all.
+    pub viewed: Option<ViewedInfo>,
 }
 impl Review {
     pub fn new(threads: &[gh::Thread], rows: Option<(usize, usize)>) -> Self {
@@ -49,7 +52,17 @@ impl Review {
             starts,
             drafts: HashMap::new(),
             rows,
+            viewed: None,
         }
+    }
+    pub fn with_viewed(mut self, viewed: Option<ViewedInfo>) -> Self {
+        self.viewed = viewed;
+        self
+    }
+    /// A file's pull request number and viewed state, when it can be marked.
+    fn view_of(&self, file: usize) -> Option<(u64, FileView)> {
+        let v = self.viewed.as_ref()?;
+        Some((v.pr, *v.files.get(file)?))
     }
     pub fn with_drafts(mut self, drafts: HashMap<LineTarget, usize>) -> Self {
         self.drafts = drafts;
@@ -87,12 +100,16 @@ pub struct NavPos {
     pub row: usize,
 }
 impl NavPos {
-    pub fn new(diff: &Arc<DiffView>, row: usize) -> Self {
-        Self { diff: Arc::as_ptr(diff) as usize, row }
+    /// Identified by the shared file list, which a collapsed copy keeps.
+    fn key(diff: &DiffView) -> usize {
+        Arc::as_ptr(&diff.files) as usize
+    }
+    pub fn new(diff: &DiffView, row: usize) -> Self {
+        Self { diff: Self::key(diff), row }
     }
     /// The row to step from, if this position still belongs to `diff`.
-    pub fn row_in(pos: Option<Self>, diff: &Arc<DiffView>) -> Option<usize> {
-        pos.filter(|p| p.diff == Arc::as_ptr(diff) as usize).map(|p| p.row)
+    pub fn row_in(pos: Option<Self>, diff: &DiffView) -> Option<usize> {
+        pos.filter(|p| p.diff == Self::key(diff)).map(|p| p.row)
     }
 }
 
@@ -176,7 +193,7 @@ fn line_target(file: &gh::FileDiff, line: &gh::DiffLine) -> Option<LineTarget> {
 }
 
 /// A file's header row, in the list and pinned above it.
-fn file_header(colors: Palette, file: &gh::FileDiff) -> Div {
+pub(super) fn file_header(colors: Palette, file: &gh::FileDiff, chevron: Option<IconName>) -> Div {
     let (glyph, color) = status_glyph(colors, file.status);
     let more = file.lines.len().saturating_sub(DiffView::MAX_LINES);
     row()
@@ -189,6 +206,7 @@ fn file_header(colors: Palette, file: &gh::FileDiff) -> Div {
         .border_color(rgb(colors.border))
         .font_family(".SystemUIFont")
         .text_size(px(12.5))
+        .children(chevron.map(|c| icon(c).size(px(13.)).text_color(rgb(colors.muted))))
         .child(glyph.size(px(13.)).text_color(rgb(color)))
         .child(
             div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child(match &file.old_path {
@@ -227,12 +245,48 @@ impl Workspace {
             View::Pulls => match &t.new_pr {
                 compare::NewPr::Open { page: compare::ComparePage::Files, .. } => data.compare_diff.get(&t.new_pr.range().map(|(b, h)| (b.to_string(), h.to_string()))?)?.data.clone(),
                 compare::NewPr::Open { .. } => None,
-                compare::NewPr::Closed if t.pr_page == PrPage::Files => data.pull_diff.get(&t.pr?)?.data.clone(),
+                compare::NewPr::Closed if t.pr_page == PrPage::Files => {
+                    let n = t.pr?;
+                    let full = data.pull_diff.get(&n)?.data.clone()?;
+                    Some(self.shown_pr_diff(t, n, &full).0)
+                }
                 compare::NewPr::Closed => None,
             },
             View::Commits => Some(data.commit.get(t.commit.as_ref()?)?.data.as_ref()?.diff.clone()),
             _ => None,
         }
+    }
+    /// A file header with a Viewed box. A viewed file's header also opens and
+    /// collapses it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn viewed_header(
+        &self,
+        id: &'static str,
+        colors: Palette,
+        pr: u64,
+        f: usize,
+        file: &gh::FileDiff,
+        state: FileView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chevron = match state {
+            FileView::Unviewed => None,
+            FileView::Open => Some(IconName::ChevronDown),
+            FileView::Collapsed => Some(IconName::ChevronRight),
+        };
+        let (open_path, mark_path) = (file.path.clone(), file.path.clone());
+        file_header(colors, file, chevron)
+            .id((id, f))
+            .when(state != FileView::Unviewed, |h| {
+                h.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| s.toggle_open(pr, open_path.clone(), cx)))
+            })
+            .child(div().flex_1())
+            .child(check_box(colors, (SharedString::from(format!("{id}-box")), f), state != FileView::Unviewed, "Viewed").on_click(cx.listener(move |s, _, _, cx| {
+                // The header around it opens and collapses; this only marks.
+                cx.stop_propagation();
+                s.toggle_viewed(pr, mark_path.clone(), cx);
+            })))
+            .into_any_element()
     }
     /// Put a suggestion block with the selected lines into the line comment box.
     pub(super) fn insert_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -382,7 +436,10 @@ impl Workspace {
                         let (f, line) = d.rows[i];
                         let file = &d.files[f];
                         match line {
-                            None => file_header(colors, file).into_any_element(),
+                            None => match rv.as_ref().and_then(|r| r.view_of(f)) {
+                                Some((pr, state)) => s.viewed_header("file-head", colors, pr, f, file, state, cx),
+                                None => file_header(colors, file, None).into_any_element(),
+                            },
                             Some(l) => {
                                 let line = &file.lines[l];
                                 let code_fg = if dark { super::syntax::ONE_DARK_FG } else { super::syntax::ONE_LIGHT_FG };
@@ -543,7 +600,10 @@ impl Workspace {
                 .left_0()
                 .right_0()
                 .occlude()
-                .child(file_header(colors, &diff.files[f]))
+                .child(match review.as_ref().and_then(|r| r.view_of(f)) {
+                    Some((pr, state)) => self.viewed_header("file-head-pinned", colors, pr, f, &diff.files[f], state, cx),
+                    None => file_header(colors, &diff.files[f], None).into_any_element(),
+                })
         });
         div()
             .relative()

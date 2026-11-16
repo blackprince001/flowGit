@@ -47,6 +47,26 @@ pub fn toggle(colors: Palette, id: &'static str, name: impl Into<Icon>, tip: &'s
         .xsmall()
         .tooltip(tip)
 }
+/// A checkbox with a label, on in the accent color. Add `on_click` to act on it.
+pub fn check_box(colors: Palette, id: impl Into<ElementId>, on: bool, text: &'static str) -> Stateful<Div> {
+    row()
+        .id(id)
+        .flex_shrink_0()
+        .gap(px(5.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(rgb(if on { colors.text } else { colors.muted }))
+        .child(
+            row()
+                .size(px(14.))
+                .justify_center()
+                .rounded(px(3.))
+                .border_1()
+                .border_color(rgb(if on { colors.blue } else { colors.border }))
+                .when(on, |b| b.bg(rgb(colors.blue)).child(icon(IconName::Check).size(px(10.)).text_color(rgb(colors.primary_text)))),
+        )
+        .child(text)
+}
 pub fn divider(colors: Palette) -> Div {
     div()
         .w(px(1.))

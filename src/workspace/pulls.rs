@@ -551,6 +551,13 @@ impl Workspace {
             (PrPage::Checks, format!("Checks  {}", p.status_check_rollup.len())),
             (PrPage::Files, format!("Files changed  {}", pr.changed_files)),
         ];
+        let viewed_summary = (t.pr_page == PrPage::Files)
+            .then(|| {
+                let v = self.data(&t.repo)?.viewed.get(&n)?.data.as_ref()?;
+                let (done, total) = v.counts();
+                Some(format!("{done} of {total} viewed"))
+            })
+            .flatten();
         let pending = self.drafts.count(&t.repo, n);
         let pending_bar = (pending > 0).then(|| self.pending_bar(pending, cx));
         let sub = row()
@@ -568,6 +575,7 @@ impl Workspace {
             .when_some(rollup, |s, r| s.child(check_icon(colors, r)))
             .children(pending_bar)
             .child(div().flex_1())
+            .when_some(viewed_summary, |s, text| s.child(label(colors, text)))
             .child(super::diff::counts(colors, p.additions as u32, p.deletions as u32));
         let body = match t.pr_page {
             PrPage::Conversation => self.conversation(pr, window, cx),
@@ -576,7 +584,9 @@ impl Workspace {
             PrPage::Files => {
                 let l = self.data(&t.repo).and_then(|d| d.pull_diff.get(&n));
                 match (l.and_then(|l| l.data.clone()), l.and_then(|l| l.error.clone())) {
-                    (Some(diff), _) => h_resizable(SharedString::from(format!("pr-files-{}", t.id)))
+                    (Some(full), _) => {
+                        let (diff, viewed) = self.shown_pr_diff(t, n, &full);
+                        h_resizable(SharedString::from(format!("pr-files-{}", t.id)))
                         .child(
                             resizable_panel()
                                 .size(px(260.))
@@ -591,13 +601,14 @@ impl Workspace {
                                         ("pr-diff", t.id),
                                         diff,
                                         t.diff_scroll.clone(),
-                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n))),
+                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n)).with_viewed(viewed)),
                                         cx,
                                     )))
                                     .when_some(t.line_target.clone(), |c, target| c.child(self.line_panel(n, pr, target, window, cx))),
                             ),
                         )
-                        .into_any_element(),
+                        .into_any_element()
+                    }
                     (None, Some(e)) => failed(colors, &e).into_any_element(),
                     _ => loading(colors, "Loading diff…").into_any_element(),
                 }
