@@ -62,6 +62,7 @@ fn main() {
             KeyBinding::new("cmd-k", CommandPalette, None),
             KeyBinding::new("cmd-shift-p", CommandPalette, None),
             KeyBinding::new("cmd-p", FindFile, None),
+            KeyBinding::new("cmd-shift-f", SearchCode, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![

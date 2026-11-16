@@ -221,8 +221,18 @@ impl Workspace {
             .border_b_1()
             .border_color(rgb(colors.row_border))
             .child(self.branch_button("code-branch", branch.clone(), cx))
-            .child(divider(colors))
-            .child(self.head_commit(t, &branch, cx));
+            .child(divider(colors));
+        let searching = t.code_search.is_on();
+        let header = if searching {
+            header.child(self.search_field(colors, t, cx))
+        } else {
+            header
+                .child(self.head_commit(t, &branch, cx))
+                .child(
+                    icon_button("code-search", IconName::Search, "Search code")
+                        .on_click(cx.listener(|s, _, window, cx| s.search_code(&SearchCode, window, cx))),
+                )
+        };
         let crumbs = row()
             .h(px(32.))
             .flex_shrink_0()
@@ -254,6 +264,7 @@ impl Workspace {
                 .child(icon_button("file-github", IconName::ExternalLink, "Open file on GitHub").on_click(move |_, _, cx| cx.open_url(&url)))
             });
         let body = match &t.file {
+            _ if searching => self.search_results(colors, t, &branch, cx),
             Some(file) => self.file_view(colors, t, &branch, file, cx),
             None => self.folder_view(colors, t, &branch, window, cx),
         };
@@ -261,7 +272,7 @@ impl Workspace {
             .size_full()
             .bg(rgb(colors.background))
             .child(header)
-            .child(crumbs)
+            .child(if searching { self.search_summary(colors, t, &branch) } else { crumbs })
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }
@@ -451,6 +462,8 @@ impl Workspace {
             .data(&t.repo)
             .and_then(|d| d.blame.get(&(branch.to_string(), file.to_string())))
             .and_then(|l| l.data.clone());
+        // The line a search result opened this file on.
+        let target = t.target_line.as_ref().filter(|f| f.path == file).map(|f| f.line as usize);
         let list = uniform_list(
             ("file-lines", tab),
             lines,
@@ -479,6 +492,7 @@ impl Workspace {
                             .id(("line", at))
                             .h(px(LINE))
                             .w_full()
+                            .when(target == Some(at + 1), |r| r.bg(rgb(colors.amber_tint)))
                             .hover(|s| s.bg(rgb(colors.chrome)))
                             .on_hover(cx.listener(move |s, over: &bool, _, cx| {
                                 if *over && s.code_hover != Some(at) {
