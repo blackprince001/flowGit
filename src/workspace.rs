@@ -179,6 +179,8 @@ pub struct RepoData {
     pub info: Load<gh::RepoInfo>,
     pub branches: Load<Vec<gh::Branch>>,
     pub contributors: Load<Vec<gh::Contributor>>,
+    /// People a new pull request can ask for review.
+    pub reviewers: Load<Vec<String>>,
     pub activity: Load<Arc<gh::Activity>>,
     pub origin: Load<String>,
     /// Queued or running workflow runs, polled for every repository.
