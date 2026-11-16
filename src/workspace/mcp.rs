@@ -13,6 +13,27 @@ struct OpenArgs {
     file: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftArgs {
+    repo: String,
+    pull_request: u64,
+    path: String,
+    line: u32,
+    start_line: Option<u32>,
+    side: Option<String>,
+    body: String,
+}
+
+/// Longest comment body accepted from an agent.
+const MAX_BODY: usize = 20_000;
+
+/// Whether `line` on the given side is part of the file's diff, which is all
+/// GitHub lets a review comment point at.
+fn in_diff(file: &gh::FileDiff, line: u32, right: bool) -> bool {
+    file.lines.iter().any(|l| if right { l.new == Some(line) } else { l.old == Some(line) })
+}
+
 /// The name a view has in tool arguments: its title, lowercase, underscored.
 fn view_name(view: View) -> String {
     view.title().to_lowercase().replace(' ', "_")
@@ -42,7 +63,9 @@ impl Workspace {
             "open" => serde_json::from_value(call.args)
                 .map_err(|e| e.to_string())
                 .and_then(|a| self.mcp_open(a, window, cx)),
-            "draft_review_comment" => Err("Review drafts aren't available in this build yet.".into()),
+            "draft_review_comment" => serde_json::from_value(call.args)
+                .map_err(|e| e.to_string())
+                .and_then(|a| self.mcp_draft(a, cx)),
             other => Err(format!("Unknown tool {other}")),
         };
         match result {
@@ -121,13 +144,77 @@ impl Workspace {
         })
     }
 
-    fn mcp_open(&mut self, a: OpenArgs, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
-        let key = self
-            .repos
+    fn sidebar_key(&self, slug: &str) -> Result<String, String> {
+        self.repos
             .iter()
-            .find(|r| r.slug().eq_ignore_ascii_case(&a.repo))
+            .find(|r| r.slug().eq_ignore_ascii_case(slug))
             .map(Repo::key)
-            .ok_or_else(|| format!("{} isn't in the Gitflow sidebar. Ask the user to add it.", a.repo))?;
+            .ok_or_else(|| format!("{slug} isn't in the Gitflow sidebar. Ask the user to add it."))
+    }
+
+    fn mcp_draft(&mut self, a: DraftArgs, cx: &mut Context<Self>) -> Result<String, String> {
+        let key = self.sidebar_key(&a.repo)?;
+        let n = a.pull_request;
+        let right = match a.side.as_deref() {
+            None | Some("RIGHT") => true,
+            Some("LEFT") => false,
+            Some(other) => return Err(format!("side must be RIGHT or LEFT, not {other}")),
+        };
+        let body = a.body.trim();
+        if body.is_empty() || body.len() > MAX_BODY {
+            return Err(format!("body must be 1 to {MAX_BODY} characters"));
+        }
+        let diff = self
+            .data(&key)
+            .and_then(|d| d.pull_diff.get(&n))
+            .and_then(|l| l.data.clone());
+        let Some(diff) = diff else {
+            // Comments are checked against the diff, so load it first.
+            let slug = self.slug_of(&key);
+            self.fetch(
+                &key,
+                move |d| d.pull_diff.entry(n).or_default(),
+                false,
+                move || Ok(Arc::new(DiffView::new(gh::pull_diff(&slug, n)?))),
+                cx,
+            );
+            return Err(format!("Loading the diff for #{n}. Try again in a few seconds."));
+        };
+        let file = diff
+            .files
+            .iter()
+            .find(|f| f.path == a.path)
+            .ok_or_else(|| format!("{} isn't changed in #{n}", a.path))?;
+        let side = if right { "RIGHT" } else { "LEFT" };
+        for line in std::iter::once(a.line).chain(a.start_line) {
+            if !in_diff(file, line, right) {
+                return Err(format!("Line {line} ({side}) of {} isn't in the diff, so GitHub can't attach a comment there", a.path));
+            }
+        }
+        if a.start_line.is_some_and(|s| s > a.line) {
+            return Err("start_line must not be after line".into());
+        }
+        self.drafts.add(
+            &key,
+            n,
+            gh::DraftComment {
+                path: a.path.clone(),
+                line: a.line,
+                right,
+                start: a.start_line.filter(|s| *s != a.line).map(|s| (s, right)),
+                body: body.to_string(),
+            },
+        );
+        cx.notify();
+        let pending = self.drafts.count(&key, n);
+        Ok(format!(
+            "Drafted a comment on {}:{} in #{n}. {pending} pending; the user reviews and submits them in Gitflow.",
+            a.path, a.line
+        ))
+    }
+
+    fn mcp_open(&mut self, a: OpenArgs, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
+        let key = self.sidebar_key(&a.repo)?;
         let view = match a.view.as_deref() {
             Some(name) => Some(
                 View::ALL
