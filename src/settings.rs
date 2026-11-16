@@ -33,16 +33,22 @@ pub enum View {
     Pulls,
     Actions,
     Releases,
+    Changes,
 }
 impl View {
-    pub const ALL: [View; 6] = [
+    pub const ALL: [View; 7] = [
         View::Code,
         View::Commits,
         View::Issues,
         View::Pulls,
         View::Actions,
         View::Releases,
+        View::Changes,
     ];
+    /// Changes reads the working tree, so only a local clone has it.
+    pub fn available(self, local: bool) -> bool {
+        local || self != View::Changes
+    }
     pub fn title(self) -> &'static str {
         match self {
             View::Code => "Code",
@@ -51,6 +57,7 @@ impl View {
             View::Pulls => "Pull requests",
             View::Actions => "Actions",
             View::Releases => "Releases",
+            View::Changes => "Changes",
         }
     }
 }

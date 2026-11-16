@@ -55,7 +55,8 @@ impl Workspace {
 
         if let Some(t) = current {
             out.push(Entry::Label("This repository".into()));
-            for (i, view) in View::ALL.into_iter().enumerate() {
+            let local = self.is_local(&t.repo);
+            for (i, view) in View::ALL.into_iter().filter(|v| v.available(local)).enumerate() {
                 let w = weak.clone();
                 out.push(Entry::Item(
                     Item::new(format!("Go to {}", view.title()))
@@ -67,6 +68,7 @@ impl Workspace {
                         }),
                 ));
             }
+            out.extend(self.changes_entries(weak));
             // Pull requests already loaded for this repository; nothing is fetched here.
             if let Some(pulls) = self
                 .data(&t.repo)

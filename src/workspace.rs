@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod actions;
+mod changes;
 mod chrome;
 mod code;
 mod commits;
@@ -51,6 +52,7 @@ actions!(
         ShowPulls,
         ShowActions,
         ShowReleases,
+        ShowChanges,
         Submit,
         Back,
         Quit,
@@ -176,6 +178,10 @@ pub struct RepoData {
     pub log: HashMap<u64, Load<Arc<LogView>>>,
     /// Every file path, per branch, for the file finder.
     pub files: HashMap<String, Load<Arc<Vec<String>>>>,
+    /// A local clone's working tree.
+    pub status: Load<Arc<gh::Status>>,
+    /// The diff of each file in the Changes view.
+    pub change_diff: HashMap<gh::ChangeRef, Load<Arc<DiffView>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -223,6 +229,7 @@ struct SavedTab {
     run: Option<u64>,
     job: Option<u64>,
     log_open: bool,
+    change: Option<gh::ChangeRef>,
 }
 impl Session {
     const FILE: &str = "session.json";
@@ -257,6 +264,7 @@ impl SavedTab {
             run: t.run,
             job: t.job,
             log_open: t.log_open,
+            change: t.change.clone(),
         }
     }
     fn apply(self, t: &mut Tab) {
@@ -274,6 +282,7 @@ impl SavedTab {
         t.run = self.run;
         t.job = self.job;
         t.log_open = self.log_open;
+        t.change = self.change;
     }
 }
 
@@ -297,8 +306,11 @@ pub struct Tab {
     pub run: Option<u64>,
     pub job: Option<u64>,
     pub log_open: bool,
+    /// Changes view: the file whose diff is shown.
+    pub change: Option<gh::ChangeRef>,
     pub search: Entity<InputState>,
     pub composer: Entity<InputState>,
+    pub commit_message: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
     /// The first line when a range is selected (`line_target` is the last).
@@ -375,6 +387,8 @@ pub struct Workspace {
     pending_clear: Option<u64>,
     /// Likewise for a tab's line comment box.
     pending_line_clear: Option<u64>,
+    /// Likewise for a tab's commit message, once the commit is made.
+    pending_commit_clear: Option<u64>,
     user: Load<gh::User>,
     gh_version: Load<String>,
     prefs_page: PrefsPage,
@@ -385,6 +399,8 @@ pub struct Workspace {
     brief_panels: Entity<ResizableState>,
     last_refresh: Instant,
     last_poll: Instant,
+    /// When the Changes view last re-read the working tree; None reads it now.
+    last_changes: Option<Instant>,
     /// When every repository was last checked for running Actions; None polls now.
     last_repo_poll: Option<Instant>,
     /// The day hovered in the brief's activity strip.
@@ -447,6 +463,7 @@ impl Workspace {
             notice: None,
             busy: None,
             pending_line_clear: None,
+            pending_commit_clear: None,
             pending_clear: None,
             user: Load::default(),
             gh_version: Load::default(),
@@ -458,6 +475,7 @@ impl Workspace {
             brief_panels,
             last_refresh: Instant::now(),
             last_poll: Instant::now(),
+            last_changes: None,
             last_repo_poll: None,
             activity_hover: None,
             code_hover: None,
@@ -500,8 +518,13 @@ impl Workspace {
     fn repo(&self, key: &str) -> Option<&Repo> {
         self.repos.iter().find(|r| r.key() == key)
     }
+    fn is_local(&self, key: &str) -> bool {
+        self.repo(key).is_some_and(|r| r.path.is_some())
+    }
     fn new_tab(&mut self, repo: &str, view: View, window: &mut Window, cx: &mut Context<Self>) -> Tab {
         self.next_id += 1;
+        // A saved or default view the repository no longer has opens on Code.
+        let view = if view.available(self.is_local(repo)) { view } else { View::Code };
         let search = input("", "Filter…", window, cx);
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
         let composer = cx.new(|cx| {
@@ -516,6 +539,14 @@ impl Workspace {
                 .auto_grow(2, 8)
                 .placeholder("Comment on this line · Markdown supported")
         });
+        let commit_message = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 8)
+                .placeholder("Commit message")
+        });
+        // The Commit button depends on whether there is a message.
+        cx.observe(&commit_message, |_, _, cx| cx.notify()).detach();
         Tab {
             id: self.next_id,
             repo: repo.to_string(),
@@ -534,8 +565,10 @@ impl Workspace {
             run: None,
             job: None,
             log_open: false,
+            change: None,
             search,
             composer,
+            commit_message,
             line_target: None,
             line_start: None,
             line_rows: (0, 0),
@@ -592,6 +625,7 @@ impl Workspace {
         tab.run = src.run;
         tab.job = src.job;
         tab.log_open = src.log_open;
+        tab.change = src.change.clone();
         tab.search
             .update(cx, |s, cx| s.set_value(search, window, cx));
         self.tabs.insert(index + 1, tab);
@@ -620,8 +654,14 @@ impl Workspace {
         }
     }
     fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
-        if let Some(t) = self.current_mut() {
+        let local = self.current().is_some_and(|t| self.is_local(&t.repo));
+        if !view.available(local) {
+            self.notice = Notice::warn(format!("{} needs a local clone of this repository.", view.title()));
+        } else if let Some(t) = self.current_mut() {
             t.view = view;
+            if view == View::Changes {
+                self.last_changes = None;
+            }
         }
         cx.notify();
     }
@@ -738,6 +778,7 @@ impl Workspace {
             trim(&mut d.commit, 30);
             trim(&mut d.jobs, 30);
             trim(&mut d.log, 10);
+            trim(&mut d.change_diff, 10);
         }
     }
     fn ensure(&mut self, force: bool, cx: &mut Context<Self>) {
@@ -973,6 +1014,7 @@ impl Workspace {
                 let s = slug.clone();
                 self.fetch(&key, |d| &mut d.releases, force, move || gh::releases(&s), cx);
             }
+            View::Changes => self.ensure_changes(&key, repo.path.clone(), force, cx),
         }
     }
     fn refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
@@ -1052,6 +1094,7 @@ impl Workspace {
         if self.overlay == Overlay::Prefs {
             return;
         }
+        self.poll_changes(cx);
         let (on, every) = (settings::get(cx).auto_refresh, settings::get(cx).refresh_secs);
         let interval = Duration::from_secs(every as u64);
         if self.last_repo_poll.is_none() || (on && self.last_repo_poll.is_some_and(|t| t.elapsed() > interval)) {
@@ -1545,6 +1588,10 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             return;
         }
         let Some(t) = self.current() else { return };
+        if t.view == View::Changes {
+            self.commit_staged(cx);
+            return;
+        }
         if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.line_target.is_some()) {
             self.submit_line(n, cx);
             return;

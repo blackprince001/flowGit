@@ -120,7 +120,7 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "repo": { "type": "string", "description": "owner/name, as listed by list_tabs" },
-                    "view": { "type": "string", "enum": ["code", "commits", "issues", "pull_requests", "actions", "releases"] },
+                    "view": { "type": "string", "enum": ["code", "commits", "issues", "pull_requests", "actions", "releases", "changes"] },
                     "pull_request": { "type": "integer", "minimum": 1, "description": "Opens this PR in the pull_requests view." },
                     "file": { "type": "string", "description": "A repository-relative path to open in the code view." }
                 },
