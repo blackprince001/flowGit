@@ -236,8 +236,10 @@ impl Workspace {
                 t.line_target = None;
                 t.pr_page = PrPage::Conversation;
             }
-            // TODO(issues): open the issue itself once there is an Issues view.
-            Target::Issue(_) => t.view = View::Code,
+            Target::Issue(n) => {
+                t.view = View::Issues;
+                t.issue = Some(n);
+            }
             Target::CheckSuite => t.view = View::Actions,
             Target::Release => t.view = View::Releases,
             Target::Repo => {}
@@ -266,7 +268,7 @@ impl Workspace {
             cx,
         );
     }
-    fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         self.mutate(
             "Marking all notifications as read".into(),
             gh::mark_all_read,
