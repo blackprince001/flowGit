@@ -343,10 +343,11 @@ impl Workspace {
                         .when(!r.active() && failed, |s| {
                             s.child(
                                 Button::new("rerun-failed")
-                                    .label("Re-run failed")
+                                    .label("Re-run failed jobs")
                                     .icon(Glyph::RotateCcw)
                                     .outline()
                                     .small()
+                                    .loading(self.busy_with("Re-running failed"))
                                     .disabled(busy)
                                     .on_click(cx.listener(move |s, _, _, cx| s.run_action(id, RunAction::RerunFailed, cx))),
                             )
@@ -358,7 +359,7 @@ impl Workspace {
                                     .icon(Glyph::RotateCcw)
                                     .primary()
                                     .small()
-                                    .loading(self.busy_with("Re-running"))
+                                    .loading(self.busy_with("Re-running all"))
                                     .disabled(busy)
                                     .on_click(cx.listener(move |s, _, _, cx| s.run_action(id, RunAction::Rerun, cx))),
                             )
