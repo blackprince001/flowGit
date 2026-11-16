@@ -19,6 +19,7 @@ fn commands() -> Vec<(&'static str, &'static str, Run)> {
         ("Go to assigned issues", "", |s, w, cx| s.show_home_page(super::home::HomePage::Issues, w, cx)),
         ("Go to Notifications", "", |s, w, cx| s.show_home_page(super::home::HomePage::Notifications, w, cx)),
         ("Find file…", "⌘P", |s, w, cx| s.find_file(&FindFile, w, cx)),
+        ("Search code…", "⇧⌘F", |s, w, cx| s.search_code(&SearchCode, w, cx)),
         ("Mark all notifications as read", "", |s, _, cx| s.mark_all_read(cx)),
         ("Refresh", "⌘R", |s, w, cx| s.refresh(&Refresh, w, cx)),
         ("Draft a release…", "⌥⌘N", |s, w, cx| {

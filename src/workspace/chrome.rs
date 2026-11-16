@@ -1395,6 +1395,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::find_file))
+            .on_action(cx.listener(Self::search_code))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_brief))
             .on_action(cx.listener(Self::close_tab))

@@ -33,11 +33,13 @@ mod preferences;
 mod pulls;
 mod releases;
 mod review;
+mod search;
 mod ui;
 
 pub use compare::NewPullRequest;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
 pub use review::FinishReview;
+pub use search::SearchCode;
 
 actions!(
     gitflow,
@@ -185,6 +187,8 @@ pub struct RepoData {
     pub folder: HashMap<(String, String), Load<Arc<gh::FolderInfo>>>,
     pub blob: HashMap<(String, String), Load<Arc<BlobView>>>,
     pub blame: HashMap<(String, String), Load<Arc<gh::Blame>>>,
+    /// Code search results, per (branch, query).
+    pub search: HashMap<(String, String), Load<Arc<search::SearchView>>>,
     pub jobs: HashMap<u64, Load<Vec<gh::Job>>>,
     pub log: HashMap<u64, Load<Arc<LogView>>>,
     /// Every file path, per branch, for the file finder.
@@ -321,6 +325,11 @@ pub struct Tab {
     pub log_open: bool,
     /// Changes view: the file whose diff is shown.
     pub change: Option<gh::ChangeRef>,
+    /// Code view: the repository search, its field, and the line a result opened the file on.
+    /// Not saved with the session.
+    pub code_search: search::CodeSearch,
+    pub code_query: Entity<InputState>,
+    pub target_line: Option<search::FileLine>,
     pub search: Entity<InputState>,
     /// Filters the job log shown on the Actions page.
     pub log_search: Entity<InputState>,
@@ -598,6 +607,15 @@ impl Workspace {
         let view = if view.available(self.is_local(repo)) { view } else { View::Code };
         let search = input("", "Filter…", window, cx);
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        let code_query = input("", "Search code in this repository…", window, cx);
+        let tab_id = self.next_id;
+        cx.subscribe(&code_query, move |s, field, e: &gpui_component::input::InputEvent, cx| {
+            if matches!(e, gpui_component::input::InputEvent::PressEnter { .. }) {
+                let query = field.read(cx).value().to_string();
+                s.submit_search(tab_id, query, cx);
+            }
+        })
+        .detach();
         let log_search = input("", "Filter log…", window, cx);
         cx.observe(&log_search, |_, _, cx| cx.notify()).detach();
         let composer = cx.new(|cx| {
@@ -659,6 +677,9 @@ impl Workspace {
             job: None,
             log_open: false,
             change: None,
+            code_search: search::CodeSearch::Off,
+            code_query,
+            target_line: None,
             search,
             log_search,
             pr_title,
@@ -875,6 +896,7 @@ impl Workspace {
         for d in self.data.values_mut() {
             trim(&mut d.blob, 30);
             trim(&mut d.blame, 30);
+            trim(&mut d.search, 10);
             trim(&mut d.tree, 60);
             trim(&mut d.folder, 60);
             trim(&mut d.issue, 30);
@@ -930,6 +952,7 @@ impl Workspace {
                 let s = slug.clone();
                 self.fetch(&key, |d| &mut d.branches, force, move || gh::branches(&s), cx);
                 let Some(branch) = branch else { return };
+                self.ensure_search(&key, &slug, repo.path.clone(), &branch, force, cx);
                 let t = self.current().unwrap();
                 let (path, file) = (t.path.clone(), t.file.clone());
                 let (s, b, p) = (slug.clone(), branch.clone(), path.clone());
@@ -1687,10 +1710,13 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
         cx.notify();
     }
     /// Step back out of a detail page: file → folder, PR/run/commit → list.
-    fn back(&mut self, _: &Back, _: &mut Window, cx: &mut Context<Self>) {
+    fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
+        if self.leave_search(window, cx) {
+            return;
+        }
         let Some(t) = self.current_mut() else { return };
         match t.view {
-            View::Code if t.file.is_some() => t.file = None,
+            View::Code if t.file.is_some() => (t.file, t.target_line) = (None, None),
             View::Code if !t.path.is_empty() => {
                 t.path = t
                     .path
