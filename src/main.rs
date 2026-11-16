@@ -38,6 +38,7 @@ fn main() {
             KeyBinding::new("cmd-5", ShowReleases, None),
             KeyBinding::new("cmd-enter", Submit, None),
             KeyBinding::new("cmd-[", Back, None),
+            KeyBinding::new("cmd-shift-n", NewPullRequest, None),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());

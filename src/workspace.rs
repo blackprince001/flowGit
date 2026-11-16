@@ -20,6 +20,7 @@ mod actions;
 mod chrome;
 mod code;
 mod commits;
+mod compare;
 mod diff;
 mod home;
 mod issues;
@@ -30,6 +31,8 @@ mod preferences;
 mod pulls;
 mod releases;
 mod ui;
+
+pub use compare::NewPullRequest;
 
 actions!(
     gitflow,
@@ -159,6 +162,9 @@ pub struct RepoData {
     pub pulls: HashMap<PrFilter, Load<Vec<gh::Pull>>>,
     pub pull: HashMap<u64, Load<gh::PullDetail>>,
     pub pull_diff: HashMap<u64, Load<Arc<DiffView>>>,
+    /// The compare page's commits and diff, per (base, head).
+    pub compare: HashMap<(String, String), Load<Arc<gh::Compare>>>,
+    pub compare_diff: HashMap<(String, String), Load<Arc<DiffView>>>,
     pub commits: HashMap<Option<String>, Load<Arc<CommitGraph>>>,
     pub commit: HashMap<String, Load<Arc<CommitInfo>>>,
     pub tree: HashMap<(String, String), Load<Vec<gh::Entry>>>,
@@ -277,11 +283,15 @@ pub struct Tab {
     pub pr_filter: PrFilter,
     pub pr: Option<u64>,
     pub pr_page: PrPage,
+    /// The compare page for a new pull request. Not saved with the session.
+    pub new_pr: compare::NewPr,
     pub workflow: Option<u64>,
     pub run: Option<u64>,
     pub job: Option<u64>,
     pub log_open: bool,
     pub search: Entity<InputState>,
+    pub pr_title: Entity<InputState>,
+    pub pr_body: Entity<InputState>,
     pub composer: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
@@ -493,6 +503,13 @@ impl Workspace {
                 .auto_grow(3, 12)
                 .placeholder("Leave a comment · Markdown supported")
         });
+        let pr_title = input("", "Title", window, cx);
+        let pr_body = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(6, 16)
+                .placeholder("Describe the change · Markdown supported")
+        });
         let line_composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -511,11 +528,14 @@ impl Workspace {
             pr_filter: PrFilter::Open,
             pr: None,
             pr_page: PrPage::Conversation,
+            new_pr: compare::NewPr::Closed,
             workflow: None,
             run: None,
             job: None,
             log_open: false,
             search,
+            pr_title,
+            pr_body,
             composer,
             line_target: None,
             line_start: None,
@@ -713,6 +733,8 @@ impl Workspace {
             trim(&mut d.folder, 60);
             trim(&mut d.pull, 30);
             trim(&mut d.pull_diff, 10);
+            trim(&mut d.compare, 10);
+            trim(&mut d.compare_diff, 5);
             trim(&mut d.commit, 30);
             trim(&mut d.jobs, 30);
             trim(&mut d.log, 10);
@@ -882,6 +904,7 @@ impl Workspace {
                         );
                     }
                 }
+                self.ensure_compare(&key, &slug, force, cx);
             }
             View::Actions => {
                 let t = self.current().unwrap();
@@ -1487,6 +1510,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
                     .unwrap_or_default()
             }
             View::Commits => t.commit = None,
+            View::Pulls if t.new_pr.is_open() => t.new_pr = compare::NewPr::Closed,
             View::Pulls => (t.pr, t.line_target) = (None, None),
             View::Actions if t.log_open => t.log_open = false,
             View::Actions => t.run = None,
@@ -1500,6 +1524,10 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             return;
         }
         let Some(t) = self.current() else { return };
+        if t.view == View::Pulls && t.new_pr.is_open() {
+            self.create_pull(cx);
+            return;
+        }
         if let (View::Pulls, Some(n), PrPage::Files, true) = (t.view, t.pr, t.pr_page, t.line_target.is_some()) {
             self.submit_line(n, cx);
             return;

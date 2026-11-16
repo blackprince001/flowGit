@@ -85,19 +85,18 @@ pub(super) fn segmented<T: Copy + PartialEq + 'static>(
 
 impl Workspace {
     pub(super) fn pulls_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match self.current().and_then(|t| t.pr) {
-            Some(n) => self.pull_page(n, window, cx),
-            None => self.pull_list(cx),
+        match self.current().map(|t| (t.new_pr.is_open(), t.pr)) {
+            Some((true, _)) => self.compare_view(window, cx),
+            Some((false, Some(n))) => self.pull_page(n, window, cx),
+            _ => self.pull_list(cx),
         }
     }
 
     fn pull_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let Some(t) = self.current() else { return div().into_any_element() };
-        let Some(repo) = self.repo(&t.repo).cloned() else { return div().into_any_element() };
         let l = self.data(&t.repo).and_then(|d| d.pulls.get(&t.pr_filter));
         let q = t.search.read(cx).value().trim().to_lowercase();
-        let compare = format!("https://github.com/{}/compare", repo.slug());
         let options = PrFilter::ALL.map(|f| (f, f.title().to_string()));
         let header = row()
             .h(px(BAR + 6.))
@@ -126,8 +125,9 @@ impl Workspace {
                     .icon(Glyph::Compare)
                     .outline()
                     .small()
-                    .tooltip("Compare branches on GitHub")
-                    .on_click(move |_, _, cx| cx.open_url(&compare)),
+                    .tooltip("Compare branches and open a pull request")
+                    .disabled(self.default_branch(&t.repo).is_none())
+                    .on_click(cx.listener(|s, _, w, cx| s.new_pull_request(&NewPullRequest, w, cx))),
             );
         let body = match state(colors, l, "Loading pull requests…") {
             Err(p) => p.into_any_element(),

@@ -1416,6 +1416,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_add_url))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::back))
+            .on_action(cx.listener(Self::new_pull_request))
             .on_action(cx.listener(|s, _: &ShowCode, _, cx| s.set_view(View::Code, cx)))
             .on_action(cx.listener(|s, _: &ShowCommits, _, cx| s.set_view(View::Commits, cx)))
             .on_action(cx.listener(|s, _: &ShowPulls, _, cx| s.set_view(View::Pulls, cx)))
