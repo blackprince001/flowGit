@@ -21,6 +21,8 @@ use gpui_component::{
 
 const LOG_ROW: f32 = 20.;
 const RUN_ROW: f32 = 60.;
+/// How often the open run's jobs are re-read while it is running.
+const JOBS_POLL: Duration = Duration::from_secs(3);
 
 /// The inline panel that starts a workflow with inputs. It lives on the tab and
 /// is not saved with the session.
@@ -946,6 +948,62 @@ impl Workspace {
             .child(label(colors, f.input.name.clone()))
             .child(control)
             .when(!f.input.description.is_empty(), |s| s.child(label(colors, f.input.description.clone())))
+    }
+
+    /// Re-read the open run's jobs every few seconds while it runs, and load the
+    /// selected job's log once that job has finished.
+    pub(super) fn poll_jobs(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        if t.view != View::Actions {
+            return;
+        }
+        let (Some(run), key) = (t.run, t.repo.clone()) else { return };
+        let Some(slug) = self.repo(&key).map(|r| r.slug()) else { return };
+        if self.run_active(&key, run) && self.last_jobs_poll.elapsed() >= JOBS_POLL {
+            self.last_jobs_poll = Instant::now();
+            let s = slug.clone();
+            self.fetch(&key, move |d| d.jobs.entry(run).or_default(), true, move || gh::jobs(&s, run), cx);
+        }
+        self.ensure_job_log(&key, &slug, run, false, cx);
+    }
+
+    /// Whether the run is queued or running, by its own status or by any of its jobs.
+    fn run_active(&self, key: &str, run: u64) -> bool {
+        let Some(d) = self.data(key) else { return false };
+        let listed = d
+            .runs
+            .values()
+            .filter_map(|l| l.data.as_ref())
+            .flatten()
+            .any(|r| r.database_id == run && r.active());
+        listed
+            || d.jobs
+                .get(&run)
+                .and_then(|l| l.data.as_ref())
+                .is_some_and(|jobs| jobs.iter().any(gh::Job::active))
+    }
+
+    /// Load the log of the selected job, once it has finished. GitHub serves no log
+    /// for a job that is still running.
+    pub(super) fn ensure_job_log(&mut self, key: &str, slug: &str, run: u64, force: bool, cx: &mut Context<Self>) {
+        let Some(t) = self.current() else { return };
+        if !t.log_open {
+            return;
+        }
+        let jobs = self.data(key).and_then(|d| d.jobs.get(&run)).and_then(|l| l.data.as_ref());
+        let Some(job) = t.job.or_else(|| jobs?.first().map(|j| j.database_id)) else { return };
+        let finished = jobs.is_some_and(|jobs| jobs.iter().any(|j| j.database_id == job && !j.active()));
+        if !finished {
+            return;
+        }
+        let (key, s) = (key.to_string(), slug.to_string());
+        self.fetch(
+            &key,
+            move |d| d.log.entry(job).or_default(),
+            force,
+            move || Ok(Arc::new(load_log(gh::job_log(&s, job)?))),
+            cx,
+        );
     }
 }
 

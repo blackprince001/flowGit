@@ -451,6 +451,8 @@ pub struct Workspace {
     brief_panels: Entity<ResizableState>,
     last_refresh: Instant,
     last_poll: Instant,
+    /// When the open run's jobs were last re-read while it runs.
+    last_jobs_poll: Instant,
     /// When the Changes view last re-read the working tree; None reads it now.
     last_changes: Option<Instant>,
     /// When every repository was last checked for running Actions; None polls now.
@@ -540,6 +542,7 @@ impl Workspace {
             brief_panels,
             last_refresh: Instant::now(),
             last_poll: Instant::now(),
+            last_jobs_poll: Instant::now(),
             last_changes: None,
             last_repo_poll: None,
             activity_hover: None,
@@ -1077,11 +1080,7 @@ impl Workspace {
             }
             View::Actions => {
                 let t = self.current().unwrap();
-                let (workflow, run, log) = (t.workflow, t.run, t.log_open);
-                let job = t.job.or_else(|| {
-                    let jobs = self.data(&key)?.jobs.get(&run?)?.data.as_ref()?;
-                    jobs.first().map(|j| j.database_id)
-                });
+                let (workflow, run) = (t.workflow, t.run);
                 let s = slug.clone();
                 self.fetch(&key, |d| &mut d.workflows, force, move || gh::workflows(&s), cx);
                 let s = slug.clone();
@@ -1105,16 +1104,7 @@ impl Workspace {
                         move || gh::jobs(&s, run),
                         cx,
                     );
-                    if let (Some(job), true) = (job, log) {
-                        let s = slug.clone();
-                        self.fetch(
-                            &key,
-                            move |d| d.log.entry(job).or_default(),
-                            force,
-                            move || Ok(Arc::new(load_log(gh::job_log(&s, job)?))),
-                            cx,
-                        );
-                    }
+                    self.ensure_job_log(&key, &slug, run, force, cx);
                 }
             }
             View::Releases => {
@@ -1209,6 +1199,7 @@ impl Workspace {
             self.poll_notifications(cx);
         }
         self.poll_changes(cx);
+        self.poll_jobs(cx);
         let (on, every) = (settings::get(cx).auto_refresh, settings::get(cx).refresh_secs);
         let interval = Duration::from_secs(every as u64);
         if self.last_repo_poll.is_none() || (on && self.last_repo_poll.is_some_and(|t| t.elapsed() > interval)) {

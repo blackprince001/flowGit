@@ -1755,6 +1755,12 @@ pub struct Job {
     #[serde(default)]
     pub steps: Vec<Step>,
 }
+impl Job {
+    /// Queued or running, so its steps and log are still changing.
+    pub fn active(&self) -> bool {
+        !self.status.eq_ignore_ascii_case("completed")
+    }
+}
 pub fn jobs(slug: &str, run: u64) -> Result<Vec<Job>> {
     #[derive(Deserialize)]
     struct Jobs {
@@ -2104,6 +2110,40 @@ jobs:
         assert_eq!(inputs[0].description, "Release channel #2 or beta");
         assert_eq!(inputs[0].kind, InputKind::Choice(vec!["stable".into(), "beta".into(), "nightly".into()]));
         assert_eq!(inputs[0].default, "beta");
+    }
+    #[test]
+    fn parses_job_steps_while_running() {
+        let sample = r#"{"databaseId":9,"name":"build","status":"in_progress","conclusion":"",
+            "startedAt":"2026-11-16T10:00:00Z","completedAt":null,
+            "steps":[
+              {"name":"Set up job","status":"completed","conclusion":"success","number":1,
+               "startedAt":"2026-11-16T10:00:00Z","completedAt":"2026-11-16T10:00:03Z"},
+              {"name":"Run tests","status":"in_progress","conclusion":"","number":2,
+               "startedAt":"2026-11-16T10:00:03Z","completedAt":null},
+              {"name":"Upload","status":"queued","conclusion":"","number":3,
+               "startedAt":null,"completedAt":null},
+              {"name":"Deploy","status":"completed","conclusion":"skipped","number":4,
+               "startedAt":null,"completedAt":null}
+            ]}"#;
+        let job: Job = json(sample).unwrap();
+        assert!(job.active());
+        let steps = job
+            .steps
+            .iter()
+            .map(|s| (s.number, s.name.as_str(), s.status.as_str(), s.conclusion.as_str(), s.started_at.is_some()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            steps,
+            vec![
+                (1, "Set up job", "completed", "success", true),
+                (2, "Run tests", "in_progress", "", true),
+                (3, "Upload", "queued", "", false),
+                (4, "Deploy", "completed", "skipped", false),
+            ]
+        );
+        let done: Job = json(r#"{"databaseId":9,"name":"build","status":"completed","conclusion":"failure","steps":[]}"#).unwrap();
+        assert!(!done.active());
+        assert!(done.steps.is_empty());
     }
     #[test]
     fn groups_review_threads() {
