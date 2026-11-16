@@ -21,6 +21,9 @@ mod chrome;
 mod code;
 mod commits;
 mod diff;
+mod home;
+mod issues;
+mod palette;
 mod md;
 mod syntax;
 mod preferences;
@@ -295,6 +298,17 @@ pub struct Tab {
     pub release_list: ListState,
 }
 
+/// The modal layer over the workspace. Only one is open at a time; dropdown
+/// menus (`popup`) are separate and can sit on top of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Overlay {
+    #[default]
+    None,
+    Prefs,
+    /// `resolving` while the typed repository is being looked up.
+    AddUrl { resolving: bool },
+}
+
 struct Notice {
     text: String,
     ok: bool,
@@ -331,8 +345,7 @@ pub struct Workspace {
     brief: bool,
     repo_search: Entity<InputState>,
     url_input: Entity<InputState>,
-    add_url_open: bool,
-    adding: bool,
+    overlay: Overlay,
     popup: Option<Entity<Menu>>,
     popup_position: Point<Pixels>,
     popup_anchor: Option<&'static str>,
@@ -348,7 +361,6 @@ pub struct Workspace {
     pending_line_clear: Option<u64>,
     user: Load<gh::User>,
     gh_version: Load<String>,
-    prefs_open: bool,
     prefs_page: PrefsPage,
     prefs_search: Entity<InputState>,
     gh_path_input: Entity<InputState>,
@@ -409,8 +421,7 @@ impl Workspace {
             brief: true,
             repo_search,
             url_input,
-            add_url_open: false,
-            adding: false,
+            overlay: Overlay::None,
             popup: None,
             popup_position: Point::default(),
             popup_anchor: None,
@@ -423,7 +434,6 @@ impl Workspace {
             pending_clear: None,
             user: Load::default(),
             gh_version: Load::default(),
-            prefs_open: false,
             prefs_page: PrefsPage::General,
             prefs_search,
             gh_path_input,
@@ -995,7 +1005,7 @@ impl Workspace {
         if self.avatars.take_dirty() {
             cx.notify();
         }
-        if self.prefs_open {
+        if self.overlay == Overlay::Prefs {
             return;
         }
         let (on, every) = (settings::get(cx).auto_refresh, settings::get(cx).refresh_secs);
@@ -1251,7 +1261,7 @@ impl Workspace {
     }
     fn open_add_url(&mut self, _: &AddUrl, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
-        self.add_url_open = true;
+        self.overlay = Overlay::AddUrl { resolving: false };
         self.url_input.update(cx, |s, cx| {
             s.set_value("", window, cx);
             s.focus(window, cx);
@@ -1266,19 +1276,25 @@ impl Workspace {
             cx.notify();
             return;
         };
-        self.adding = true;
+        self.overlay = Overlay::AddUrl { resolving: true };
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || gh::resolve(&owner, &name)).await;
             let _ = this.update_in(cx, |s, w, cx| {
-                s.adding = false;
+                if let Overlay::AddUrl { resolving } = &mut s.overlay {
+                    *resolving = false;
+                }
                 match result {
                     Ok((owner, name)) if clone => {
-                        s.add_url_open = false;
+if matches!(s.overlay, Overlay::AddUrl { .. }) {
+                            s.overlay = Overlay::None;
+                        }
                         s.clone_repo(owner, name, w, cx);
                     }
                     Ok((owner, name)) => {
-                        s.add_url_open = false;
+if matches!(s.overlay, Overlay::AddUrl { .. }) {
+                            s.overlay = Overlay::None;
+                        }
                         s.add_repo(
                             Repo {
                                 owner,
@@ -1401,7 +1417,7 @@ impl Workspace {
         cx.subscribe_in(&menu, window, |s, _, _: &DismissEvent, window, cx| {
             s.popup = None;
             s.dismissed = s.popup_anchor.take().map(|a| (a, Instant::now()));
-            if !s.prefs_open {
+            if s.overlay != Overlay::Prefs {
                 s.focus.focus(window);
             }
             cx.notify();
@@ -1429,10 +1445,8 @@ impl Workspace {
         cx.notify();
     }
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prefs_open {
-            self.prefs_open = false;
-        } else if self.add_url_open {
-            self.add_url_open = false;
+        if self.overlay != Overlay::None {
+            self.overlay = Overlay::None;
         } else if let Some(i) = self.active {
             self.close(i, cx);
         } else {
@@ -1456,7 +1470,7 @@ impl Workspace {
     }
     fn open_prefs(&mut self, _: &OpenPreferences, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
-        self.prefs_open = true;
+        self.overlay = Overlay::Prefs;
         self.prefs_search.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
     }
@@ -1481,7 +1495,7 @@ impl Workspace {
         cx.notify();
     }
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.add_url_open {
+        if matches!(self.overlay, Overlay::AddUrl { .. }) {
             self.submit_url(false, window, cx);
             return;
         }

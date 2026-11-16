@@ -74,7 +74,7 @@ fn picker(colors: Palette, id: &'static str, text: String) -> Button {
 
 impl Workspace {
     fn close_prefs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.prefs_open = false;
+        self.overlay = Overlay::None;
         self.popup = None;
         self.focus.focus(window);
         cx.notify();

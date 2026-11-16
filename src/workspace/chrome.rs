@@ -1211,7 +1211,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|s, _, _, cx| {
-                    s.add_url_open = false;
+                    s.overlay = Overlay::None;
                     cx.notify();
                 }),
             )
@@ -1260,7 +1260,7 @@ impl Workspace {
                                             .icon(Glyph::Fetch)
                                             .outline()
                                             .small()
-                                            .disabled(self.adding || self.busy.is_some())
+                                            .disabled(self.overlay == Overlay::AddUrl { resolving: true } || self.busy.is_some())
                                             .tooltip("gh repo clone into a folder you choose")
                                             .on_click(cx.listener(|s, _, w, cx| s.submit_url(true, w, cx))),
                                     )
@@ -1269,8 +1269,8 @@ impl Workspace {
                                             .label("Add")
                                             .primary()
                                             .small()
-                                            .loading(self.adding)
-                                            .disabled(self.adding)
+                                            .loading(self.overlay == Overlay::AddUrl { resolving: true })
+                                            .disabled(self.overlay == Overlay::AddUrl { resolving: true })
                                             .on_click(cx.listener(|s, _, w, cx| s.submit_url(false, w, cx))),
                                     ),
                             ),
@@ -1425,10 +1425,9 @@ impl Render for Workspace {
                 if e.keystroke.key != "escape" {
                     return;
                 }
-                if s.popup.is_some() || s.add_url_open || s.prefs_open {
+                if s.popup.is_some() || s.overlay != Overlay::None {
                     s.popup = None;
-                    s.add_url_open = false;
-                    s.prefs_open = false;
+                    s.overlay = Overlay::None;
                     cx.notify();
                 } else if s.focus.is_focused(w) {
                     s.back(&Back, w, cx);
@@ -1437,10 +1436,10 @@ impl Render for Workspace {
             .child(self.title(cx))
             .child(div().flex_1().min_h_0().child(main))
             .child(self.status(cx));
-        if self.prefs_open {
-            root = root.child(self.preferences_view(cx));
-        } else if self.add_url_open {
-            root = root.child(self.add_url_view(cx));
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::Prefs => root = root.child(self.preferences_view(cx)),
+            Overlay::AddUrl { .. } => root = root.child(self.add_url_view(cx)),
         }
         if let Some(notice) = &self.notice {
             root = root.child(self.notice_view(notice, cx));
