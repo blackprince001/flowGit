@@ -303,6 +303,7 @@ impl Workspace {
         let gone = id.clone();
         self.mutate(
             "Marking as read".into(),
+            Report::Quiet,
             move || gh::mark_read(&id),
             move |s, cx| {
                 if let Some(list) = s.home.notifications.data.as_mut() {
@@ -316,6 +317,7 @@ impl Workspace {
     pub(super) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         self.mutate(
             "Marking all notifications as read".into(),
+            Report::Notice,
             gh::mark_all_read,
             |s, cx| {
                 s.home.notifications.data = Some(vec![]);

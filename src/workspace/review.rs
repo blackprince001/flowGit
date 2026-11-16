@@ -171,6 +171,7 @@ impl Workspace {
         let tab = self.current().map(|t| t.id);
         self.mutate(
             format!("Submitting review on #{n}"),
+            Report::Notice,
             move || gh::pr_action(&slug, n, &action),
             move |s, cx| {
                 s.drafts.submitted(&key, n, &ids);

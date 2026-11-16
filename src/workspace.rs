@@ -391,6 +391,15 @@ impl Notice {
     }
 }
 
+/// How `Workspace::mutate` reports a change that worked. A failure always shows.
+#[derive(Clone, Copy, PartialEq)]
+enum Report {
+    /// Show the command's last line, or "<label> — done.", in the notice bar.
+    Notice,
+    /// Stay silent. For small, frequent, local actions where the list already shows the result.
+    Quiet,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum PrefsPage {
     General,
@@ -1255,6 +1264,7 @@ impl Workspace {
     fn mutate(
         &mut self,
         label: String,
+        report: Report,
         job: impl FnOnce() -> anyhow::Result<String> + Send + 'static,
         done: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -1271,12 +1281,14 @@ impl Workspace {
                 s.busy = None;
                 match result {
                     Ok(out) => {
-                        let out = out.trim();
-                        s.notice = Notice::ok(if out.is_empty() || out.len() > 200 {
-                            format!("{label} — done.")
-                        } else {
-                            out.lines().last().unwrap_or(out).trim_start_matches('✓').trim().to_string()
-                        });
+                        if report == Report::Notice {
+                            let out = out.trim();
+                            s.notice = Notice::ok(if out.is_empty() || out.len() > 200 {
+                                format!("{label} — done.")
+                            } else {
+                                out.lines().last().unwrap_or(out).trim_start_matches('✓').trim().to_string()
+                            });
+                        }
                         done(s, cx);
                     }
                     Err(e) => s.notice = Notice::warn(e.to_string()),
@@ -1315,6 +1327,7 @@ impl Workspace {
         let tab = t.id;
         self.mutate(
             label,
+            Report::Notice,
             move || gh::pr_action(&slug, number, &action),
             move |s, cx| {
                 if let Some(d) = s.data.get_mut(&key) {
@@ -1351,6 +1364,7 @@ impl Workspace {
         };
         self.mutate(
             label,
+            Report::Notice,
             move || gh::run_action(&slug, run, &action),
             move |s, cx| {
                 if let Some(d) = s.data.get_mut(&key) {
@@ -1372,6 +1386,7 @@ impl Workspace {
         let key = repo.key();
         self.mutate(
             format!("Fetching {}", repo.name),
+            Report::Notice,
             move || gh::fetch(&path).map(|_| String::new()),
             move |s, cx| {
                 if let Some(d) = s.data.get_mut(&key) {

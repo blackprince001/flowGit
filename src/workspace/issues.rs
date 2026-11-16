@@ -629,6 +629,7 @@ impl Workspace {
         let clears_composer = matches!(action, IssueAction::Comment(_));
         self.mutate(
             label,
+            Report::Notice,
             move || gh::issue_action(&slug, number, &action),
             move |s, cx| {
                 if let Some(d) = s.data.get_mut(&key) {

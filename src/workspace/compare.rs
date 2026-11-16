@@ -194,6 +194,7 @@ impl Workspace {
         let label = format!("Creating pull request from {head}");
         self.mutate(
             label,
+            Report::Notice,
             move || {
                 let n = gh::create_pr(&slug, &base, &head, &title, &body, draft)?;
                 sent.store(n, Ordering::SeqCst);

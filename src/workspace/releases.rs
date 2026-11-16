@@ -221,6 +221,7 @@ impl Workspace {
         let refresh = slug.clone();
         self.mutate(
             format!("Creating draft {tag}"),
+            Report::Notice,
             move || gh::create_draft(&slug, &tag, &branch, &title, &notes),
             move |s, cx| {
                 if let Some(t) = s.tabs.iter_mut().find(|t| t.id == id) {

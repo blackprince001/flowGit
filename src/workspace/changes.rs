@@ -120,7 +120,7 @@ impl Workspace {
     // ── Actions ─────────────────────────────────────────────────────────────
 
     /// Run one git write on the current tab's clone, then re-read its status.
-    fn git_write(&mut self, label: String, after: Aftermath, job: impl FnOnce(&Path) -> anyhow::Result<String> + Send + 'static, cx: &mut Context<Self>) {
+    fn git_write(&mut self, label: String, report: Report, after: Aftermath, job: impl FnOnce(&Path) -> anyhow::Result<String> + Send + 'static, cx: &mut Context<Self>) {
         let Some(t) = self.current() else { return };
         let Some(repo) = self.repo(&t.repo).cloned() else { return };
         let Some(path) = repo.path.clone() else { return };
@@ -128,6 +128,7 @@ impl Workspace {
         let at = path.clone();
         self.mutate(
             label,
+            report,
             move || job(&at),
             move |s, cx| {
                 if !matches!(after, Aftermath::Index)
@@ -149,14 +150,14 @@ impl Workspace {
             return;
         }
         let label = format!("Staging {}", files_label(files.len()));
-        self.git_write(label, Aftermath::Index, move |p| gh::stage(p, &files), cx);
+        self.git_write(label, Report::Quiet, Aftermath::Index, move |p| gh::stage(p, &files), cx);
     }
     fn unstage_files(&mut self, files: Vec<String>, cx: &mut Context<Self>) {
         if files.is_empty() {
             return;
         }
         let label = format!("Unstaging {}", files_label(files.len()));
-        self.git_write(label, Aftermath::Index, move |p| gh::unstage(p, &files), cx);
+        self.git_write(label, Report::Quiet, Aftermath::Index, move |p| gh::unstage(p, &files), cx);
     }
     fn stage_all(&mut self, cx: &mut Context<Self>) {
         let Some(status) = self.current().and_then(|t| self.status_of(&t.repo)) else { return };
@@ -178,17 +179,17 @@ impl Workspace {
         } else if !staged {
             self.notice = Notice::warn("Stage some files to commit first.");
         } else {
-            self.git_write("Committing".into(), Aftermath::Committed(tab), move |p| gh::commit(p, &message), cx);
+            self.git_write("Committing".into(), Report::Notice, Aftermath::Committed(tab), move |p| gh::commit(p, &message), cx);
         }
         cx.notify();
     }
     fn push_branch(&mut self, cx: &mut Context<Self>) {
         let publish = self.current().and_then(|t| self.status_of(&t.repo)).is_some_and(|s| s.upstream.is_none());
         let label = if publish { "Publishing branch" } else { "Pushing" };
-        self.git_write(label.into(), Aftermath::History, gh::push_branch, cx);
+        self.git_write(label.into(), Report::Notice, Aftermath::History, gh::push_branch, cx);
     }
     fn pull_branch(&mut self, cx: &mut Context<Self>) {
-        self.git_write("Pulling".into(), Aftermath::History, gh::pull_branch, cx);
+        self.git_write("Pulling".into(), Report::Notice, Aftermath::History, gh::pull_branch, cx);
     }
     /// Show a file's diff, freshly read: a diff kept from earlier may be out of date.
     fn pick_change(&mut self, pick: ChangeRef, cx: &mut Context<Self>) {
