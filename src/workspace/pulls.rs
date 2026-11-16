@@ -21,17 +21,17 @@ use gpui_component::{
 
 const PR_ROW: f32 = 56.;
 /// Conversation layout: avatar column, gap to the text, reply geometry.
-const AVATAR: f32 = 34.;
-const RAIL_INSET: f32 = AVATAR + 12.;
+pub(super) const AVATAR: f32 = 34.;
+pub(super) const RAIL_INSET: f32 = AVATAR + 12.;
 const REPLY_AVATAR: f32 = 24.;
 const REPLY_TOP: f32 = 14.;
 
 /// The conversation rail: visible on both themes without competing with text.
-fn rail_color(colors: Palette) -> u32 {
+pub(super) fn rail_color(colors: Palette) -> u32 {
     mix(colors.border, colors.quiet, 0.45)
 }
 /// "Nov 11 at 10:43 AM", or "Today at …" / "Yesterday at …".
-fn stamp(ts: i64) -> String {
+pub(super) fn stamp(ts: i64) -> String {
     format!("{} at {}", day(ts), clock(ts))
 }
 
@@ -703,7 +703,7 @@ impl Workspace {
 
     /// A message's header and Markdown body; the avatar goes on the rail.
     #[allow(clippy::too_many_arguments)]
-    fn message(&self, id: String, login: &str, verb: Option<Div>, when: i64, body: &str, accent: Option<(u32, u32, &'static str)>, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn message(&self, id: String, login: &str, verb: Option<Div>, when: i64, body: &str, accent: Option<(u32, u32, &'static str)>, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let colors = palette(cx);
         col()
             .gap(px(6.))
@@ -727,7 +727,7 @@ impl Workspace {
             })
     }
     /// A round badge holding an event's glyph, in the avatar column.
-    fn badge(&self, glyph: impl Into<gpui_component::Icon>, color: u32, cx: &App) -> AnyElement {
+    pub(super) fn badge(&self, glyph: impl Into<gpui_component::Icon>, color: u32, cx: &App) -> AnyElement {
         let colors = palette(cx);
         div()
             .size(px(AVATAR))
@@ -1061,7 +1061,7 @@ impl Workspace {
     }
 }
 
-fn label_pill(colors: Palette, l: &gh::Label) -> Div {
+pub(super) fn label_pill(colors: Palette, l: &gh::Label) -> Div {
     let hex = u32::from_str_radix(l.color.trim_start_matches('#'), 16).unwrap_or(colors.quiet);
     row()
         .flex_shrink_0()

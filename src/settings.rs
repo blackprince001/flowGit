@@ -29,14 +29,16 @@ pub enum View {
     #[default]
     Code,
     Commits,
+    Issues,
     Pulls,
     Actions,
     Releases,
 }
 impl View {
-    pub const ALL: [View; 5] = [
+    pub const ALL: [View; 6] = [
         View::Code,
         View::Commits,
+        View::Issues,
         View::Pulls,
         View::Actions,
         View::Releases,
@@ -45,6 +47,7 @@ impl View {
         match self {
             View::Code => "Code",
             View::Commits => "Commits",
+            View::Issues => "Issues",
             View::Pulls => "Pull requests",
             View::Actions => "Actions",
             View::Releases => "Releases",
