@@ -51,6 +51,7 @@ actions!(
         ShowPulls,
         ShowActions,
         ShowReleases,
+        DraftRelease,
         Submit,
         Back,
         Quit,
@@ -298,6 +299,8 @@ pub struct Tab {
     pub job: Option<u64>,
     pub log_open: bool,
     pub search: Entity<InputState>,
+    /// Filters the job log shown on the Actions page.
+    pub log_search: Entity<InputState>,
     pub composer: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
@@ -312,6 +315,22 @@ pub struct Tab {
     pub log_scroll: UniformListScrollHandle,
     pub page_scroll: ScrollHandle,
     pub release_list: ListState,
+    /// The draft release panel above the Releases list, and its fields.
+    pub release_draft: ReleaseDraft,
+    pub draft_tag: Entity<InputState>,
+    pub draft_branch: Entity<InputState>,
+    pub draft_title: Entity<InputState>,
+    pub draft_notes: Entity<InputState>,
+    /// Notes GitHub wrote for the draft's tag.
+    pub generated_notes: Load<gh::GeneratedNotes>,
+}
+
+/// The release draft panel. Its fields live on the tab.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ReleaseDraft {
+    #[default]
+    Closed,
+    Open,
 }
 
 /// The modal layer over the workspace. Only one is open at a time; dropdown
@@ -504,6 +523,8 @@ impl Workspace {
         self.next_id += 1;
         let search = input("", "Filter…", window, cx);
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        let log_search = input("", "Filter log…", window, cx);
+        cx.observe(&log_search, |_, _, cx| cx.notify()).detach();
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -516,6 +537,18 @@ impl Workspace {
                 .auto_grow(2, 8)
                 .placeholder("Comment on this line · Markdown supported")
         });
+        let draft_tag = input("", "Tag, such as v1.2.0", window, cx);
+        let draft_branch = input("", "Target branch", window, cx);
+        let draft_title = input("", "Title", window, cx);
+        let draft_notes = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(4, 14)
+                .placeholder("Notes · Markdown supported")
+        });
+        for field in [&draft_tag, &draft_branch, &draft_title, &draft_notes] {
+            cx.observe(field, |_, _, cx| cx.notify()).detach();
+        }
         Tab {
             id: self.next_id,
             repo: repo.to_string(),
@@ -535,6 +568,7 @@ impl Workspace {
             job: None,
             log_open: false,
             search,
+            log_search,
             composer,
             line_target: None,
             line_start: None,
@@ -546,6 +580,12 @@ impl Workspace {
             log_scroll: UniformListScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             release_list: ListState::new(0, ListAlignment::Top, px(600.)),
+            release_draft: ReleaseDraft::Closed,
+            draft_tag,
+            draft_branch,
+            draft_title,
+            draft_notes,
+            generated_notes: Load::default(),
         }
     }
     /// Focus the repository's existing tab, or open one on the default view.
@@ -576,6 +616,7 @@ impl Workspace {
         };
         let (repo, view) = (src.repo.clone(), src.view);
         let search = src.search.read(cx).value().to_string();
+        let log_search = src.log_search.read(cx).value().to_string();
         let mut tab = self.new_tab(&repo, view, window, cx);
         let src = &self.tabs[index];
         tab.branch = src.branch.clone();
@@ -594,6 +635,8 @@ impl Workspace {
         tab.log_open = src.log_open;
         tab.search
             .update(cx, |s, cx| s.set_value(search, window, cx));
+        tab.log_search
+            .update(cx, |s, cx| s.set_value(log_search, window, cx));
         self.tabs.insert(index + 1, tab);
         self.active = Some(index + 1);
         cx.notify();

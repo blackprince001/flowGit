@@ -1613,6 +1613,47 @@ pub fn releases(slug: &str) -> Result<Vec<Release>> {
     json(&gh(&["api", &format!("repos/{slug}/releases?per_page=30")])?)
 }
 
+/// Release notes GitHub writes for a tag, from the pull requests merged since the
+/// previous release.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct GeneratedNotes {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub body: String,
+}
+pub fn generate_notes(slug: &str, tag: &str, branch: &str) -> Result<GeneratedNotes> {
+    json(&gh(&[
+        "api",
+        &format!("repos/{slug}/releases/generate-notes"),
+        "-f",
+        &format!("tag_name={tag}"),
+        "-f",
+        &format!("target_commitish={branch}"),
+    ])?)
+}
+/// Create a draft release. The notes go in on stdin, so they need no quoting.
+pub fn create_draft(slug: &str, tag: &str, branch: &str, title: &str, notes: &str) -> Result<String> {
+    gh_in(
+        &[
+            "release",
+            "create",
+            tag,
+            "--repo",
+            slug,
+            "--draft",
+            "--target",
+            branch,
+            "--title",
+            title,
+            "--notes-file",
+            "-",
+        ],
+        None,
+        Some(notes),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1710,6 +1751,16 @@ mod tests {
         };
         assert_eq!(status.outcome(), CheckState::Pass);
         assert_eq!(c("COMPLETED", "SKIPPED").outcome(), CheckState::Skipped);
+    }
+    #[test]
+    fn parses_generated_release_notes() {
+        let sample = r#"{"name":"v1.2.0","body":"What's Changed\n* Fix crash by @someone in https://github.com/o/r/pull/12\n\n**Full Changelog**: https://github.com/o/r/compare/v1.1.0...v1.2.0"}"#;
+        let notes: GeneratedNotes = json(sample).unwrap();
+        assert_eq!(notes.name, "v1.2.0");
+        assert!(notes.body.starts_with("What's Changed"));
+        assert!(notes.body.contains("pull/12"));
+        let bare: GeneratedNotes = json(r#"{"name":"v2"}"#).unwrap();
+        assert_eq!((bare.name.as_str(), bare.body.as_str()), ("v2", ""));
     }
 }
 

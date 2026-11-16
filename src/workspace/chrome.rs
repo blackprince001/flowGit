@@ -1430,6 +1430,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|s, _: &ShowPulls, _, cx| s.set_view(View::Pulls, cx)))
             .on_action(cx.listener(|s, _: &ShowActions, _, cx| s.set_view(View::Actions, cx)))
             .on_action(cx.listener(|s, _: &ShowReleases, _, cx| s.set_view(View::Releases, cx)))
+            .on_action(cx.listener(|s, _: &DraftRelease, window, cx| {
+                s.set_view(View::Releases, cx);
+                s.open_release_draft(window, cx);
+            }))
             .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 if e.keystroke.key != "escape" {
                     return;
