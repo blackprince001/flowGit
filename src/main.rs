@@ -22,6 +22,7 @@ fn main() {
             KeyBinding::new("cmd-r", Refresh, None),
             KeyBinding::new("cmd-b", ToggleSidebar, None),
             KeyBinding::new("cmd-alt-b", ToggleBrief, None),
+            KeyBinding::new("cmd-shift-n", DraftRelease, None),
             KeyBinding::new("cmd-w", CloseTab, None),
             KeyBinding::new("cmd-shift-d", DuplicateTab, None),
             KeyBinding::new("cmd-shift-]", NextTab, None),

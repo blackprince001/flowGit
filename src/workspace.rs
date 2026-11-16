@@ -49,6 +49,7 @@ actions!(
         ShowPulls,
         ShowActions,
         ShowReleases,
+        DraftRelease,
         Submit,
         Back,
         Quit
@@ -298,6 +299,22 @@ pub struct Tab {
     pub log_scroll: UniformListScrollHandle,
     pub page_scroll: ScrollHandle,
     pub release_list: ListState,
+    /// The draft release panel above the Releases list, and its fields.
+    pub release_draft: ReleaseDraft,
+    pub draft_tag: Entity<InputState>,
+    pub draft_branch: Entity<InputState>,
+    pub draft_title: Entity<InputState>,
+    pub draft_notes: Entity<InputState>,
+    /// Notes GitHub wrote for the draft's tag.
+    pub generated_notes: Load<gh::GeneratedNotes>,
+}
+
+/// The release draft panel. Its fields live on the tab.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ReleaseDraft {
+    #[default]
+    Closed,
+    Open,
 }
 
 /// The modal layer over the workspace. Only one is open at a time; dropdown
@@ -503,6 +520,18 @@ impl Workspace {
                 .auto_grow(2, 8)
                 .placeholder("Comment on this line · Markdown supported")
         });
+        let draft_tag = input("", "Tag, such as v1.2.0", window, cx);
+        let draft_branch = input("", "Target branch", window, cx);
+        let draft_title = input("", "Title", window, cx);
+        let draft_notes = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(4, 14)
+                .placeholder("Notes · Markdown supported")
+        });
+        for field in [&draft_tag, &draft_branch, &draft_title, &draft_notes] {
+            cx.observe(field, |_, _, cx| cx.notify()).detach();
+        }
         Tab {
             id: self.next_id,
             repo: repo.to_string(),
@@ -532,6 +561,12 @@ impl Workspace {
             log_scroll: UniformListScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             release_list: ListState::new(0, ListAlignment::Top, px(600.)),
+            release_draft: ReleaseDraft::Closed,
+            draft_tag,
+            draft_branch,
+            draft_title,
+            draft_notes,
+            generated_notes: Load::default(),
         }
     }
     /// Focus the repository's existing tab, or open one on the default view.
