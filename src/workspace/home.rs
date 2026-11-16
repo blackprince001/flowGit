@@ -413,7 +413,7 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .gap(px(4.))
-                    .child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(item.title.clone()))
+                    .child(row().w_full().overflow_hidden().child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(item.title.clone())))
                     .child(
                         row()
                             .w_full()
@@ -458,7 +458,7 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .gap(px(4.))
-                    .child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(n.subject.title.clone()))
+                    .child(row().w_full().overflow_hidden().child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(n.subject.title.clone())))
                     .child(
                         row()
                             .w_full()
