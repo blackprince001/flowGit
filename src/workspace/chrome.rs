@@ -1383,7 +1383,7 @@ impl Render for Workspace {
             .text_size(px(13.))
             .track_focus(&self.focus)
             // Diff stepping keys (j k n p) apply while a diff is on screen.
-            .when(self.overlay == Overlay::None && self.active_diff().is_some(), |d| d.key_context("DiffNav"))
+            .when_some(self.key_contexts(), |d, c| d.key_context(c.as_str()))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::find_file))
@@ -1401,6 +1401,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::back))
             .on_action(cx.listener(Self::new_pull_request))
             .on_action(cx.listener(Self::open_finish_review))
+            .on_action(cx.listener(Self::approve_pull))
+            .on_action(cx.listener(Self::merge_pull))
+            .on_action(cx.listener(Self::checkout_pull))
             .on_action(cx.listener(Self::next_file))
             .on_action(cx.listener(Self::previous_file))
             .on_action(cx.listener(Self::next_hunk))

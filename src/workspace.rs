@@ -40,6 +40,7 @@ mod ui;
 pub use compare::NewPullRequest;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
 use diff::NavPos;
+pub use pulls::{ApprovePull, CheckoutPull, MergePull};
 pub use review::FinishReview;
 
 actions!(
