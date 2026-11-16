@@ -584,7 +584,7 @@ impl Workspace {
                 cx,
             ));
         let body = if log_open {
-            match (shown, loaded.and_then(|l| l.error.clone())) {
+            match (shown, loaded.and_then(|l| l.error().map(str::to_string))) {
                 (Some((log, rows)), _) => self.log_list(t, log, rows, cx),
                 (None, Some(e)) => failed(colors, &e).into_any_element(),
                 _ if !j.status.eq_ignore_ascii_case("completed") => {

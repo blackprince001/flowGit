@@ -258,7 +258,7 @@ impl Workspace {
                 let Some(t) = s.current() else { return vec![] };
                 let l = s.data(&t.repo).map(|d| &d.reviewers);
                 let Some(people) = l.and_then(|l| l.data.as_ref()) else {
-                    let text = if l.and_then(|l| l.error.as_ref()).is_some() { "Could not load people" } else { "Loading people…" };
+                    let text = if l.is_some_and(|l| l.error().is_some()) { "Could not load people" } else { "Loading people…" };
                     return vec![Entry::Item(Item::new(text).disabled(true))];
                 };
                 // GitHub won't take the author as their own reviewer.

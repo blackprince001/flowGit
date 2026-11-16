@@ -401,7 +401,7 @@ impl Workspace {
             .child(div().text_color(rgb(colors.muted)).child(format!("#{n}")))
 ;
         let Some(pr) = l.and_then(|l| l.data.as_ref()) else {
-            let body = match l.and_then(|l| l.error.clone()) {
+            let body = match l.and_then(|l| l.error().map(str::to_string)) {
                 Some(e) => failed(colors, &e),
                 None => loading(colors, "Loading pull request…"),
             };
@@ -669,7 +669,7 @@ impl Workspace {
             PrPage::Checks => self.pr_checks(pr, cx),
             PrPage::Files => {
                 let l = self.data(&t.repo).and_then(|d| d.pull_diff.get(&n));
-                match (l.and_then(|l| l.data.clone()), l.and_then(|l| l.error.clone())) {
+                match (l.and_then(|l| l.data.clone()), l.and_then(|l| l.error().map(str::to_string))) {
                     (Some(full), _) => {
                         let (diff, viewed) = self.shown_pr_diff(t, n, &full);
                         h_resizable(SharedString::from(format!("pr-files-{}", t.id)))

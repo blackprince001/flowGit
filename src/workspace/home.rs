@@ -174,10 +174,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let l = slot(&mut self.home);
-        if l.loading || (!force && !l.pending()) {
+        if l.loading() || (!force && !l.pending()) {
             return;
         }
-        l.loading = true;
+        l.start();
         // With nothing to show yet, show the last session's copy first.
         let try_cache = l.data.is_none();
         cx.spawn(async move |this, cx| {
@@ -191,9 +191,7 @@ impl Workspace {
                 if let Ok(v) = cached {
                     let _ = this.update(cx, |s, cx| {
                         let l = slot(&mut s.home);
-                        if l.loading && l.data.is_none() {
-                            l.data = Some(v);
-                            l.stale = true;
+                        if l.show_cached(v) {
                             s.refreshing += 1;
                             counted = true;
                             cx.notify();
@@ -206,21 +204,13 @@ impl Workspace {
             };
             let result = smol::unblock(job).await;
             let _ = this.update(cx, |s, cx| {
-                let l = slot(&mut s.home);
-                l.loading = false;
-                l.stale = false;
                 if counted {
                     s.refreshing = s.refreshing.saturating_sub(1);
                 }
-                match result {
-                    Ok(v) => {
-                        live(s, &v, cx);
-                        let l = slot(&mut s.home);
-                        l.data = Some(v);
-                        l.error = None;
-                    }
-                    Err(e) => l.error = Some(e.to_string()),
+                if let Ok(v) = &result {
+                    live(s, v, cx);
                 }
+                slot(&mut s.home).finish(result.map_err(|e| e.to_string()));
                 cx.notify();
             });
         })

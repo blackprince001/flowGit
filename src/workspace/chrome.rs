@@ -202,7 +202,7 @@ impl Workspace {
             let key = r.key();
             let is_active = active.as_ref() == Some(&key);
             let open = self.tabs.iter().any(|t| t.repo == key);
-            let loading = self.data(&key).is_some_and(|d| d.info.loading && d.info.data.is_none());
+            let loading = self.data(&key).is_some_and(|d| d.info.loading() && d.info.data.is_none());
             let running = self.running_runs(&key);
             let mut tip = match &r.path {
                 Some(p) => format!("{} · {}", r.slug(), p.display()),
@@ -290,7 +290,7 @@ impl Workspace {
         let user = self.user.data.as_ref();
         let account = match (&self.user, user) {
             (_, Some(u)) => u.login.clone(),
-            (l, None) if l.loading => "Checking gh…".into(),
+            (l, None) if l.loading() => "Checking gh…".into(),
             _ => "Not signed in".into(),
         };
         col()
@@ -353,7 +353,7 @@ impl Workspace {
                                 .text_size(px(11.)),
                             ),
                     )
-                    .when(self.user.error.is_some(), |s| {
+                    .when(self.user.error().is_some(), |s| {
                         s.child(
                             icon(IconName::TriangleAlert)
                                 .text_color(rgb(colors.amber))
@@ -441,7 +441,7 @@ impl Workspace {
             let repo = self.repo(&t.repo);
             let name = repo.map(|r| r.name.clone()).unwrap_or_else(|| t.repo.clone());
             let tip = format!("{} · {}", repo.map(Repo::slug).unwrap_or_default(), t.view.title());
-            let busy = self.data(&t.repo).is_some_and(|d| d.info.loading && d.info.data.is_none());
+            let busy = self.data(&t.repo).is_some_and(|d| d.info.loading() && d.info.data.is_none());
             tabs = tabs.child(
                 row()
                     .id(("tab", t.id))
@@ -824,8 +824,8 @@ impl Workspace {
                 body = body.child(facts);
                 body = body.child(self.activity_strip(colors, data, cx));
             }
-            Some(Load { error: Some(e), .. }) => {
-                body = body.child(div().pt_3().text_color(rgb(colors.red)).text_size(px(12.)).child(e.clone()));
+            Some(l) if l.error().is_some() => {
+                body = body.child(div().pt_3().text_color(rgb(colors.red)).text_size(px(12.)).child(l.error().unwrap_or_default().to_string()));
             }
             _ => body = body.child(row().pt_3().gap_2().text_color(rgb(colors.muted)).child(spinner(colors)).child("Loading…")),
         }
@@ -947,7 +947,7 @@ impl Workspace {
                 .gap_2()
                 .text_size(px(12.))
                 .text_color(rgb(colors.muted))
-                .when(l.and_then(|l| l.error.clone()).is_none(), |s| s.child(spinner(colors)).child("Reading activity…"));
+                .when(l.is_none_or(|l| l.error().is_none()), |s| s.child(spinner(colors)).child("Reading activity…"));
         };
         let max = act.days.iter().map(|(_, c)| c.len()).max().unwrap_or(0).max(1) as f32;
         let total: usize = act.days.iter().map(|(_, c)| c.len()).sum();
@@ -1141,14 +1141,14 @@ impl Workspace {
                     .px_1()
                     .child(div().size(px(6.)).rounded_full().bg(rgb(if signed_in {
                         colors.green
-                    } else if self.user.loading {
+                    } else if self.user.loading() {
                         colors.amber
                     } else {
                         colors.red
                     })))
                     .child(match &self.user.data {
                         Some(u) => u.login.clone(),
-                        None if self.user.loading => "Connecting to gh…".into(),
+                        None if self.user.loading() => "Connecting to gh…".into(),
                         None => "gh not signed in".into(),
                     }),
             )

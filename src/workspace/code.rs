@@ -76,7 +76,7 @@ impl Workspace {
                 .flex_1()
                 .gap_2()
                 .text_color(rgb(colors.muted))
-                .when(l.is_none_or(|l| l.loading), |s| s.child(spinner(colors)).child("Reading latest commit…"));
+                .when(l.is_none_or(|l| l.loading()), |s| s.child(spinner(colors)).child("Reading latest commit…"));
         };
         let Some(head) = info.head.clone() else {
             return row().flex_1().text_color(rgb(colors.muted)).child("No commits on this branch");
@@ -208,7 +208,7 @@ impl Workspace {
         };
         let data = self.data(&t.repo);
         let Some(branch) = self.branch_of(t) else {
-            return match data.and_then(|d| d.info.error.clone()) {
+            return match data.and_then(|d| d.info.error().map(str::to_string)) {
                 Some(e) => failed(colors, &e).into_any_element(),
                 None => loading(colors, "Loading repository…").into_any_element(),
             };

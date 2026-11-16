@@ -113,7 +113,7 @@ impl Workspace {
         // Searching again after a failure tries again.
         if let (CodeSearch::Results { query }, Some(branch)) = (&t.code_search, branch)
             && let Some(d) = self.data.get_mut(&t.repo)
-            && d.search.get(&(branch.clone(), query.clone())).is_some_and(|l| l.error.is_some())
+            && d.search.get(&(branch.clone(), query.clone())).is_some_and(|l| l.error().is_some())
         {
             d.search.remove(&(branch, query.clone()));
         }
@@ -190,7 +190,7 @@ impl Workspace {
                 .child(div().font_weight(FontWeight::MEDIUM).child(format!("{} in {}", plural(v.matches, "match"), plural(v.files.len(), "file"))))
                 .child(div().min_w_0().truncate().text_color(rgb(colors.muted)).child(format!("for “{query}”")))
                 .when(v.truncated, |s| s.child(label(colors, "· more than this, narrow the search"))),
-            None if l.is_some_and(|l| l.error.is_some()) => bar.text_color(rgb(colors.muted)).child("Search failed"),
+            None if l.is_some_and(|l| l.error().is_some()) => bar.text_color(rgb(colors.muted)).child("Search failed"),
             None => bar.text_color(rgb(colors.muted)).child(spinner(colors)).child("Searching…"),
         }
     }

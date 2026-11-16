@@ -442,7 +442,7 @@ impl Workspace {
                     .child(resizable_panel().child(self.diff_list(("commit-diff", t.id), diff, t.diff_scroll.clone(), None, cx)))
                     .into_any_element()
             }
-            (Some(Load { error: Some(e), .. }), _) => failed(colors, e).into_any_element(),
+            (Some(l), _) if l.error().is_some() => failed(colors, l.error().unwrap_or_default()).into_any_element(),
             _ => loading(colors, "Loading changes…").into_any_element(),
         };
         col()

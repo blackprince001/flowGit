@@ -20,7 +20,7 @@ How code in Gitflow is shaped. Read this before adding a feature. If something h
 
 The rule: **a value that can only be in one of N states is one enum, not N flags.**
 
-- **Remote data** is a `Load<T>`, loaded only through `Workspace::fetch` (or the home equivalent). Don't add `loading: bool` or `error: Option<String>` fields next to data.
+- **Remote data** is a `Load<T>`, loaded only through `Workspace::fetch` (or the home equivalent). Its `Status` is one enum (`Idle`, `Loading`, `Failed`); don't add `loading: bool` or `error: Option<String>` fields next to data.
 - **Changes to GitHub** (comment, merge, create, rerun) go only through `Workspace::mutate`. It owns the busy label, the single in-flight mutation and the result notice. Don't spawn your own.
 - **Multi-step flows** (create a PR, submit a review, commit) are one enum each, for example:
 
@@ -38,7 +38,7 @@ The rule: **a value that can only be in one of N states is one enum, not N flags
 - **Polling** hooks into `Workspace::tick` with its own interval check. Don't start new timers.
 - **Never use a sentinel value** to mean something else, like an empty repo key for "not a repo".
 
-Some older code doesn't follow these yet (`Load`'s separate flags, the five PR line-selection fields on `Tab`). Leave it alone unless your task is to fix it.
+Some older code doesn't follow these yet (the five PR line-selection fields on `Tab`). Leave it alone unless your task is to fix it.
 
 ## Checks before you finish
 

@@ -168,11 +168,12 @@ pub fn failed(colors: Palette, error: &str) -> Div {
 #[allow(clippy::result_large_err)]
 pub fn state<T>(colors: Palette, l: Option<&Load<T>>, what: &str) -> Result<(), Div> {
     match l {
-        Some(Load { data: Some(_), .. }) => Ok(()),
-        Some(Load {
-            error: Some(e), ..
-        }) => Err(failed(colors, e)),
-        _ => Err(loading(colors, what)),
+        Some(l) if l.data.is_some() => Ok(()),
+        Some(l) => match l.error() {
+            Some(e) => Err(failed(colors, e)),
+            None => Err(loading(colors, what)),
+        },
+        None => Err(loading(colors, what)),
     }
 }
 

@@ -192,7 +192,7 @@ impl Workspace {
                     return vec![];
                 };
                 let Some(files) = &load.data else {
-                    let text = match &load.error {
+                    let text = match load.error() {
                         Some(e) => format!("Couldn't list files: {e}"),
                         None => "Loading files…".into(),
                     };

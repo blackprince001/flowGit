@@ -267,7 +267,7 @@ impl Workspace {
 
     fn github_page(&self, colors: Palette, mono: SharedString, cx: &mut Context<Self>) -> Div {
         let prefs = settings::get(cx).clone();
-        let account: AnyElement = match (&self.user.data, &self.user.error) {
+        let account: AnyElement = match (&self.user.data, self.user.error()) {
             (Some(u), _) => row()
                 .gap_2()
                 .child(self.avatar(Some(&u.login), &u.login, 22., cx))
@@ -302,8 +302,8 @@ impl Workspace {
             .child(setting(
                 colors,
                 "Signed in as",
-                &match &self.user.error {
-                    Some(e) => e.clone(),
+                &match self.user.error() {
+                    Some(e) => e.to_string(),
                     None => format!(
                         "Gitflow uses your gh login and never stores a token. gh {}.",
                         self.gh_version.data.clone().unwrap_or_default()
@@ -314,7 +314,7 @@ impl Workspace {
                     .child(account)
                     .child(
                         icon_button("pref-recheck", Glyph::Refresh, "Check again")
-                            .loading(self.user.loading)
+                            .loading(self.user.loading())
                             .on_click(cx.listener(|s, _, _, cx| s.load_account(cx))),
                     ),
             ))

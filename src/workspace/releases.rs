@@ -77,7 +77,7 @@ impl Workspace {
     fn release_draft_panel(&self, t: &Tab, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let busy = self.busy.is_some();
-        let generating = t.generated_notes.loading;
+        let generating = t.generated_notes.loading();
         let no_tag = t.draft_tag.read(cx).value().trim().is_empty();
         let fields = col()
             .gap_3()
@@ -99,7 +99,7 @@ impl Workspace {
                     .truncate()
                     .text_size(px(12.))
                     .text_color(rgb(colors.red))
-                    .child(t.generated_notes.error.clone().unwrap_or_default()),
+                    .child(t.generated_notes.error().unwrap_or_default().to_string()),
             )
             .child(
                 Button::new("generate-release-notes")
@@ -177,14 +177,13 @@ impl Workspace {
         }
         let (id, slug) = (t.id, repo.slug());
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            t.generated_notes.loading = true;
+            t.generated_notes.start();
         }
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || gh::generate_notes(&slug, &tag, &branch)).await;
             let _ = this.update_in(cx, |s, w, cx| {
                 let Some(t) = s.tabs.iter_mut().find(|t| t.id == id) else { return };
-                t.generated_notes.loading = false;
                 match result {
                     Ok(notes) => {
                         // A panel closed while the request ran keeps its fields as they were.
@@ -192,10 +191,9 @@ impl Workspace {
                             t.draft_title.update(cx, |f, cx| f.set_value(notes.name.clone(), w, cx));
                             t.draft_notes.update(cx, |f, cx| f.set_value(notes.body.clone(), w, cx));
                         }
-                        t.generated_notes.error = None;
-                        t.generated_notes.data = Some(notes);
+                        t.generated_notes.finish(Ok(notes));
                     }
-                    Err(e) => t.generated_notes.error = Some(e.to_string()),
+                    Err(e) => t.generated_notes.finish(Err(e.to_string())),
                 }
                 cx.notify();
             });

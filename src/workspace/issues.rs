@@ -286,7 +286,7 @@ impl Workspace {
             .child(div().text_color(rgb(colors.quiet)).child("/"))
             .child(div().text_color(rgb(colors.muted)).child(format!("#{n}")));
         let Some(issue) = l.and_then(|l| l.data.as_ref()) else {
-            let body = match l.and_then(|l| l.error.clone()) {
+            let body = match l.and_then(|l| l.error().map(str::to_string)) {
                 Some(e) => failed(colors, &e),
                 None => loading(colors, "Loading issue…"),
             };

@@ -25,6 +25,7 @@ mod compare;
 mod diff;
 mod home;
 mod issues;
+mod load;
 mod mcp;
 mod palette;
 mod md;
@@ -39,6 +40,7 @@ mod viewed;
 mod ui;
 
 pub use compare::NewPullRequest;
+pub use load::Load;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
 use diff::NavPos;
 pub use pulls::{ApprovePull, CheckoutPull, MergePull};
@@ -74,34 +76,6 @@ actions!(
         FindFile
     ]
 );
-
-/// A request's lifecycle. Data stays visible while a refresh is in flight.
-pub struct Load<T> {
-    pub data: Option<T>,
-    pub error: Option<String>,
-    pub loading: bool,
-    /// `data` came from the disk cache and a live request is still running.
-    pub stale: bool,
-    /// When a view last asked for this, for dropping the least recently used.
-    pub used: u64,
-}
-impl<T> Default for Load<T> {
-    fn default() -> Self {
-        Self {
-            data: None,
-            error: None,
-            loading: false,
-            stale: false,
-            used: 0,
-        }
-    }
-}
-impl<T> Load<T> {
-    /// Still waiting for the first answer.
-    pub fn pending(&self) -> bool {
-        self.data.is_none() && self.error.is_none()
-    }
-}
 
 pub struct CommitGraph {
     pub commits: Vec<gh::Commit>,
@@ -853,10 +827,10 @@ impl Workspace {
         self.tick += 1;
         let l = slot(self.data.entry(repo.to_string()).or_default());
         l.used = self.tick;
-        if l.loading || (!force && !l.pending()) {
+        if l.loading() || (!force && !l.pending()) {
             return;
         }
-        l.loading = true;
+        l.start();
         // With nothing to show yet, show the last session's copy first.
         let try_cache = l.data.is_none();
         let repo = repo.to_string();
@@ -872,9 +846,7 @@ impl Workspace {
                     let _ = this.update(cx, |s, cx| {
                         let l = slot(s.data.entry(repo.clone()).or_default());
                         // A slot cleared or filled meanwhile is left alone.
-                        if l.loading && l.data.is_none() {
-                            l.data = Some(v);
-                            l.stale = true;
+                        if l.show_cached(v) {
                             s.refreshing += 1;
                             counted = true;
                             cx.notify();
@@ -888,17 +860,9 @@ impl Workspace {
             let result = smol::unblock(job).await;
             let _ = this.update(cx, |s, cx| {
                 let l = slot(s.data.entry(repo).or_default());
-                l.loading = false;
-                l.stale = false;
+                l.finish(result.map_err(|e| e.to_string()));
                 if counted {
                     s.refreshing = s.refreshing.saturating_sub(1);
-                }
-                match result {
-                    Ok(v) => {
-                        l.data = Some(v);
-                        l.error = None;
-                    }
-                    Err(e) => l.error = Some(e.to_string()),
                 }
                 cx.notify();
             });
@@ -933,7 +897,7 @@ impl Workspace {
             if map.len() <= cap {
                 return;
             }
-            let mut idle: Vec<(u64, K)> = map.iter().filter(|(_, l)| !l.loading).map(|(k, l)| (l.used, k.clone())).collect();
+            let mut idle: Vec<(u64, K)> = map.iter().filter(|(_, l)| !l.loading()).map(|(k, l)| (l.used, k.clone())).collect();
             idle.sort_by_key(|(used, _)| *used);
             let excess = map.len() - cap;
             for (_, k) in idle.into_iter().take(excess) {
@@ -1202,7 +1166,7 @@ impl Workspace {
         }
         self.ensure(true, cx);
         self.poll_repos(cx);
-        if self.user.error.is_some() {
+        if self.user.error().is_some() {
             self.load_account(cx);
         }
         cx.notify();
@@ -1299,22 +1263,13 @@ impl Workspace {
         }
     }
     fn load_account(&mut self, cx: &mut Context<Self>) {
-        self.user = Load {
-            loading: true,
-            ..Default::default()
-        };
+        self.user = Load::default();
+        self.user.start();
         cx.spawn(async move |this, cx| {
             let (user, version) = smol::unblock(|| (gh::current_user(), gh::version())).await;
             let _ = this.update(cx, |s, cx| {
-                s.user.loading = false;
-                match user {
-                    Ok(u) => s.user.data = Some(u),
-                    Err(e) => s.user.error = Some(e.to_string()),
-                }
-                match version {
-                    Ok(v) => s.gh_version.data = Some(v),
-                    Err(e) => s.gh_version.error = Some(e.to_string()),
-                }
+                s.user.finish(user.map_err(|e| e.to_string()));
+                s.gh_version.finish(version.map_err(|e| e.to_string()));
                 cx.notify();
             });
         })
