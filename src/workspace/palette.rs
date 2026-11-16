@@ -16,6 +16,12 @@ fn commands() -> Vec<(&'static str, &'static str, Run)> {
     vec![
         ("Find file…", "⌘P", |s, w, cx| s.find_file(&FindFile, w, cx)),
         ("Refresh", "⌘R", |s, w, cx| s.refresh(&Refresh, w, cx)),
+        ("Draft a release…", "⇧⌘N", |s, w, cx| {
+            if s.current().is_some() {
+                s.set_view(View::Releases, cx);
+                s.open_release_draft(w, cx);
+            }
+        }),
         ("Toggle sidebar", "⌘B", |s, w, cx| s.toggle_sidebar(&ToggleSidebar, w, cx)),
         ("Toggle brief panel", "⌥⌘B", |s, w, cx| s.toggle_brief(&ToggleBrief, w, cx)),
         ("Duplicate tab", "⇧⌘D", |s, w, cx| s.duplicate_tab(&DuplicateTab, w, cx)),
