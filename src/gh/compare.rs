@@ -1,6 +1,6 @@
 //! GitHub calls for the compare page: what `head` adds on top of `base`, and
 //! creating a pull request from it.
-use super::{ApiCommit, Commit, FileDiff, Result, bail, encode, gh, gh_in, json, parse_diff};
+use super::{ApiCommit, Commit, FileDiff, Result, bail, contributors, encode, gh, gh_in, json, parse_diff};
 use serde::Deserialize;
 
 /// The summary half of `compare/{base}...{head}`: how far apart two branches
@@ -75,18 +75,57 @@ pub fn parse_created(output: &str) -> Option<u64> {
     output.lines().rev().find_map(|l| l.trim().rsplit_once("/pull/")?.1.trim_end_matches('/').parse().ok())
 }
 
+/// The arguments of `gh pr create`. The body is read from stdin.
+fn create_args(slug: &str, base: &str, head: &str, title: &str, draft: bool, reviewers: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = ["pr", "create", "--repo", slug, "--base", base, "--head", head, "--title", title, "--body-file", "-"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if draft {
+        args.push("--draft".into());
+    }
+    if !reviewers.is_empty() {
+        args.extend(["--reviewer".into(), reviewers.join(",")]);
+    }
+    args
+}
+
 /// Open a pull request and return its number. The body goes through stdin so
 /// its length and content never reach a command line.
-pub fn create_pr(slug: &str, base: &str, head: &str, title: &str, body: &str, draft: bool) -> Result<u64> {
-    let mut args = vec!["pr", "create", "--repo", slug, "--base", base, "--head", head, "--title", title, "--body-file", "-"];
-    if draft {
-        args.push("--draft");
-    }
+pub fn create_pr(slug: &str, base: &str, head: &str, title: &str, body: &str, draft: bool, reviewers: &[String]) -> Result<u64> {
+    let args = create_args(slug, base, head, title, draft, reviewers);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = gh_in(&args, None, Some(body))?;
     match parse_created(&out) {
         Some(n) => Ok(n),
         None => bail!("Created the pull request, but could not read its number from: {}", out.trim()),
     }
+}
+
+/// Logins from `gh api ... --jq '.[].login'` output, one per line, without repeats.
+pub fn parse_logins(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for login in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !out.iter().any(|l| l == login) {
+            out.push(login.to_string());
+        }
+    }
+    out
+}
+
+/// `collaborators`, or `fallback` when that call fails or lists nobody.
+fn people(collaborators: Result<Vec<String>>, fallback: impl FnOnce() -> Result<Vec<String>>) -> Result<Vec<String>> {
+    match collaborators {
+        Ok(list) if !list.is_empty() => Ok(list),
+        _ => fallback(),
+    }
+}
+
+/// People who can be asked to review: the repository's collaborators, or its
+/// contributors when GitHub won't show collaborators to this account.
+pub fn reviewer_candidates(slug: &str) -> Result<Vec<String>> {
+    let collaborators = gh(&["api", "--paginate", &format!("repos/{slug}/collaborators?per_page=100"), "--jq", ".[].login"]).map(|t| parse_logins(&t));
+    people(collaborators, || Ok(contributors(slug)?.into_iter().map(|c| c.login).collect()))
 }
 
 /// A title from a branch name: `fix/login-bug` becomes "Fix login bug".
@@ -156,6 +195,30 @@ mod tests {
         assert_eq!(parse_created("https://github.com/o/r/pull/42\n"), Some(42));
         assert_eq!(parse_created("Creating pull request...\nhttps://github.com/o/r/pull/7"), Some(7));
         assert_eq!(parse_created("nothing useful"), None);
+    }
+    #[test]
+    fn reads_logins_one_per_line() {
+        assert_eq!(parse_logins("ada\n bob \n\nada\n"), vec!["ada".to_string(), "bob".to_string()]);
+        assert!(parse_logins("").is_empty());
+    }
+    #[test]
+    fn falls_back_to_contributors() {
+        let fallback = || Ok(vec!["carol".to_string()]);
+        assert_eq!(people(Ok(vec!["ada".into()]), fallback).unwrap(), vec!["ada".to_string()]);
+        // No permission to list collaborators, or none listed.
+        assert_eq!(people(Err(anyhow::anyhow!("403")), fallback).unwrap(), vec!["carol".to_string()]);
+        assert_eq!(people(Ok(vec![]), fallback).unwrap(), vec!["carol".to_string()]);
+        assert!(people(Err(anyhow::anyhow!("403")), || Err(anyhow::anyhow!("404"))).is_err());
+    }
+    #[test]
+    fn passes_reviewers_to_gh_pr_create() {
+        let args = create_args("o/r", "main", "feat", "T", false, &["ada".into(), "bob".into()]);
+        let at = args.iter().position(|a| a == "--reviewer").unwrap();
+        assert_eq!(args[at + 1], "ada,bob");
+        assert!(!args.contains(&"--draft".to_string()));
+        let none = create_args("o/r", "main", "feat", "T", true, &[]);
+        assert!(!none.contains(&"--reviewer".to_string()));
+        assert!(none.contains(&"--draft".to_string()));
     }
     #[test]
     fn humanizes_branch_names() {

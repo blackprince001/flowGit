@@ -53,6 +53,10 @@ fn main() {
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-shift-n", NewPullRequest, None),
             KeyBinding::new("cmd-shift-enter", FinishReview, None),
+            // Pull request actions: only on a pull request page, never while typing.
+            KeyBinding::new("cmd-shift-a", ApprovePull, Some("PullPage && !Input")),
+            KeyBinding::new("cmd-shift-m", MergePull, Some("PullPage && !Input")),
+            KeyBinding::new("cmd-shift-c", CheckoutPull, Some("PullPage && !Input")),
             // Plain letters: only inside a diff, and never while a text input has focus.
             KeyBinding::new("j", NextFile, Some("DiffNav && !Input")),
             KeyBinding::new("k", PreviousFile, Some("DiffNav && !Input")),

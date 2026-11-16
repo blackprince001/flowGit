@@ -81,6 +81,7 @@ impl Workspace {
                 ));
             }
             out.extend(self.changes_entries(weak));
+            out.extend(self.pull_entries(weak));
             // Pull requests already loaded for this repository; nothing is fetched here.
             if let Some(pulls) = self
                 .data(&t.repo)

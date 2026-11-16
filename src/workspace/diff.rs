@@ -7,6 +7,7 @@ use crate::{
     icons::Glyph,
 };
 use gpui::prelude::FluentBuilder;
+use super::viewed::{FileView, ViewedInfo};
 use gpui_component::{ActiveTheme, IconName};
 use std::collections::HashMap;
 
@@ -28,6 +29,8 @@ pub struct Review {
     pub drafts: HashMap<LineTarget, usize>,
     /// The selected diff rows, first to last.
     pub rows: Option<(usize, usize)>,
+    /// Which files are marked viewed, where the diff can be marked at all.
+    pub viewed: Option<ViewedInfo>,
 }
 impl Review {
     pub fn new(threads: &[gh::Thread], rows: Option<(usize, usize)>) -> Self {
@@ -49,7 +52,17 @@ impl Review {
             starts,
             drafts: HashMap::new(),
             rows,
+            viewed: None,
         }
+    }
+    pub fn with_viewed(mut self, viewed: Option<ViewedInfo>) -> Self {
+        self.viewed = viewed;
+        self
+    }
+    /// A file's pull request number and viewed state, when it can be marked.
+    fn view_of(&self, file: usize) -> Option<(u64, FileView)> {
+        let v = self.viewed.as_ref()?;
+        Some((v.pr, *v.files.get(file)?))
     }
     pub fn with_drafts(mut self, drafts: HashMap<LineTarget, usize>) -> Self {
         self.drafts = drafts;
@@ -78,6 +91,46 @@ pub fn step(rows: &[usize], from: usize, forward: bool) -> Option<usize> {
     }
 }
 
+/// The row keyboard navigation last scrolled to, and the diff it was in.
+/// Stepping from it, not from the first visible row, keeps j/k moving near the
+/// end of a list, where a target can't reach the top of the view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavPos {
+    pub diff: usize,
+    pub row: usize,
+}
+impl NavPos {
+    /// Identified by the shared file list, which a collapsed copy keeps.
+    fn key(diff: &DiffView) -> usize {
+        Arc::as_ptr(&diff.files) as usize
+    }
+    pub fn new(diff: &DiffView, row: usize) -> Self {
+        Self { diff: Self::key(diff), row }
+    }
+    /// The row to step from, if this position still belongs to `diff`.
+    pub fn row_in(pos: Option<Self>, diff: &DiffView) -> Option<usize> {
+        pos.filter(|p| p.diff == Self::key(diff)).map(|p| p.row)
+    }
+}
+
+/// The row to scroll to for a next or previous file (`rows` are file rows) or
+/// hunk (`rows` are hunk rows). `top` is the first visible row and `visible` how
+/// many fit. `last` is the row navigation last scrolled to; it is the place to
+/// step from while it is still on screen, and `top` otherwise (the user has
+/// scrolled away, or the diff changed).
+pub fn nav_target(rows: &[usize], hunks: bool, top: usize, visible: usize, last: Option<usize>, forward: bool) -> Option<usize> {
+    let from = match last {
+        Some(l) if (top..=top + visible).contains(&l) => l,
+        _ => top,
+    };
+    if hunks {
+        // A hunk lands just under the pinned file header so its @@ line shows.
+        step(rows, from + 1, forward).map(|r| r.saturating_sub(1))
+    } else {
+        step(rows, from, forward)
+    }
+}
+
 /// Where a thread sits in the current diff; outdated threads have no line.
 pub fn thread_target(t: &gh::Thread) -> Option<LineTarget> {
     Some(LineTarget {
@@ -98,6 +151,28 @@ fn thread_start(t: &gh::Thread) -> Option<LineTarget> {
         right: t.root.start_side.as_deref().or(t.root.side.as_deref()) != Some("LEFT"),
     })
 }
+/// The new-side text of the diff rows `rows.0..=rows.1`: additions and context,
+/// without the removed lines. This is what a suggestion replaces.
+pub fn new_side_lines(diff: &DiffView, rows: (usize, usize)) -> Vec<String> {
+    (rows.0..=rows.1)
+        .filter_map(|r| {
+            let (f, l) = *diff.rows.get(r)?;
+            let line = diff.files[f].lines.get(l?)?;
+            matches!(line.kind, LineKind::Add | LineKind::Context).then(|| line.text.clone())
+        })
+        .collect()
+}
+/// A fenced suggestion block holding `lines`, fenced wider than any backticks inside.
+pub fn suggestion_block(lines: &[String]) -> String {
+    let longest = lines
+        .iter()
+        .flat_map(|l| l.split(|c| c != '`').map(str::len))
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}suggestion\n{}\n{fence}\n", lines.join("\n"))
+}
+
 /// The commentable line at a diff row, if it is one.
 fn row_target(diff: &DiffView, row: usize) -> Option<LineTarget> {
     let (f, l) = *diff.rows.get(row)?;
@@ -118,7 +193,7 @@ fn line_target(file: &gh::FileDiff, line: &gh::DiffLine) -> Option<LineTarget> {
 }
 
 /// A file's header row, in the list and pinned above it.
-fn file_header(colors: Palette, file: &gh::FileDiff) -> Div {
+pub(super) fn file_header(colors: Palette, file: &gh::FileDiff, chevron: Option<IconName>) -> Div {
     let (glyph, color) = status_glyph(colors, file.status);
     let more = file.lines.len().saturating_sub(DiffView::MAX_LINES);
     row()
@@ -131,6 +206,7 @@ fn file_header(colors: Palette, file: &gh::FileDiff) -> Div {
         .border_color(rgb(colors.border))
         .font_family(".SystemUIFont")
         .text_size(px(12.5))
+        .children(chevron.map(|c| icon(c).size(px(13.)).text_color(rgb(colors.muted))))
         .child(glyph.size(px(13.)).text_color(rgb(color)))
         .child(
             div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child(match &file.old_path {
@@ -169,12 +245,67 @@ impl Workspace {
             View::Pulls => match &t.new_pr {
                 compare::NewPr::Open { page: compare::ComparePage::Files, .. } => data.compare_diff.get(&t.new_pr.range().map(|(b, h)| (b.to_string(), h.to_string()))?)?.data.clone(),
                 compare::NewPr::Open { .. } => None,
-                compare::NewPr::Closed if t.pr_page == PrPage::Files => data.pull_diff.get(&t.pr?)?.data.clone(),
+                compare::NewPr::Closed if t.pr_page == PrPage::Files => {
+                    let n = t.pr?;
+                    let full = data.pull_diff.get(&n)?.data.clone()?;
+                    Some(self.shown_pr_diff(t, n, &full).0)
+                }
                 compare::NewPr::Closed => None,
             },
             View::Commits => Some(data.commit.get(t.commit.as_ref()?)?.data.as_ref()?.diff.clone()),
             _ => None,
         }
+    }
+    /// A file header with a Viewed box. A viewed file's header also opens and
+    /// collapses it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn viewed_header(
+        &self,
+        id: &'static str,
+        colors: Palette,
+        pr: u64,
+        f: usize,
+        file: &gh::FileDiff,
+        state: FileView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chevron = match state {
+            FileView::Unviewed => None,
+            FileView::Open => Some(IconName::ChevronDown),
+            FileView::Collapsed => Some(IconName::ChevronRight),
+        };
+        let (open_path, mark_path) = (file.path.clone(), file.path.clone());
+        file_header(colors, file, chevron)
+            .id((id, f))
+            .when(state != FileView::Unviewed, |h| {
+                h.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| s.toggle_open(pr, open_path.clone(), cx)))
+            })
+            .child(div().flex_1())
+            .child(check_box(colors, (SharedString::from(format!("{id}-box")), f), state != FileView::Unviewed, "Viewed").on_click(cx.listener(move |s, _, _, cx| {
+                // The header around it opens and collapses; this only marks.
+                cx.stop_propagation();
+                s.toggle_viewed(pr, mark_path.clone(), cx);
+            })))
+            .into_any_element()
+    }
+    /// Put a suggestion block with the selected lines into the line comment box.
+    pub(super) fn insert_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
+        let lines = new_side_lines(&diff, t.line_rows);
+        if lines.is_empty() {
+            return;
+        }
+        let input = t.line_composer.clone();
+        let mut block = suggestion_block(&lines);
+        // Start on a fresh line when there is already text before the cursor.
+        let text = input.read(cx).value();
+        if !text.is_empty() && !text.ends_with('\n') {
+            block.insert(0, '\n');
+        }
+        input.update(cx, |i, cx| {
+            i.insert(block, window, cx);
+            i.focus(window, cx);
+        });
     }
     /// Scroll the diff to the next or previous file (`files`) or hunk.
     fn step_diff(&mut self, files: bool, forward: bool, cx: &mut Context<Self>) {
@@ -185,16 +316,19 @@ impl Workspace {
         let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
         let scroll = t.diff_scroll.clone();
         // The first row in view, which the pinned file header sits over.
-        let offset = -f32::from(scroll.0.borrow().base_handle.offset().y);
-        let top = (offset / LINE).floor().max(0.) as usize;
-        let target = if files {
-            step(&file_rows(&diff), top, forward)
-        } else {
-            // A hunk lands just under the pinned file header so its @@ line shows.
-            step(&hunk_rows(&diff), top + 1, forward).map(|r| r.saturating_sub(1))
+        let (offset, height) = {
+            let state = scroll.0.borrow();
+            (-f32::from(state.base_handle.offset().y), f32::from(state.base_handle.bounds().size.height))
         };
-        if let Some(row) = target {
+        let top = (offset / LINE).floor().max(0.) as usize;
+        let visible = (height / LINE).floor() as usize;
+        let rows = if files { file_rows(&diff) } else { hunk_rows(&diff) };
+        let last = NavPos::row_in(t.diff_nav, &diff);
+        if let Some(row) = nav_target(&rows, !files, top, visible, last, forward) {
             scroll.scroll_to_item(row, ScrollStrategy::Top);
+            if let Some(t) = self.current_mut() {
+                t.diff_nav = Some(NavPos::new(&diff, row));
+            }
             cx.notify();
         }
     }
@@ -302,7 +436,10 @@ impl Workspace {
                         let (f, line) = d.rows[i];
                         let file = &d.files[f];
                         match line {
-                            None => file_header(colors, file).into_any_element(),
+                            None => match rv.as_ref().and_then(|r| r.view_of(f)) {
+                                Some((pr, state)) => s.viewed_header("file-head", colors, pr, f, file, state, cx),
+                                None => file_header(colors, file, None).into_any_element(),
+                            },
                             Some(l) => {
                                 let line = &file.lines[l];
                                 let code_fg = if dark { super::syntax::ONE_DARK_FG } else { super::syntax::ONE_LIGHT_FG };
@@ -463,7 +600,10 @@ impl Workspace {
                 .left_0()
                 .right_0()
                 .occlude()
-                .child(file_header(colors, &diff.files[f]))
+                .child(match review.as_ref().and_then(|r| r.view_of(f)) {
+                    Some((pr, state)) => self.viewed_header("file-head-pinned", colors, pr, f, &diff.files[f], state, cx),
+                    None => file_header(colors, &diff.files[f], None).into_any_element(),
+                })
         });
         div()
             .relative()
@@ -489,7 +629,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_rows, hunk_rows, step};
+    use super::{file_rows, hunk_rows, nav_target, new_side_lines, step, suggestion_block};
     use crate::workspace::DiffView;
 
     fn sample() -> DiffView {
@@ -516,5 +656,57 @@ mod tests {
         assert_eq!(step(&rows, 9, false), Some(0));
         assert_eq!(step(&rows, 0, false), None);
         assert_eq!(step(&[], 3, true), None);
+    }
+    #[test]
+    fn steps_from_the_top_row_when_nothing_was_navigated() {
+        let files = [0, 9, 20];
+        assert_eq!(nav_target(&files, false, 0, 10, None, true), Some(9));
+        assert_eq!(nav_target(&files, false, 10, 10, None, false), Some(9));
+        // Hunks land one row above the hunk.
+        let hunks = [1, 5, 10];
+        assert_eq!(nav_target(&hunks, true, 0, 10, None, true), Some(4));
+    }
+    #[test]
+    fn keeps_moving_when_the_target_cannot_reach_the_top() {
+        // 25 rows, 10 visible: the view stops at row 15, so file 20 sits mid-screen.
+        let files = [0, 9, 20, 23];
+        let first = nav_target(&files, false, 9, 10, Some(9), true);
+        assert_eq!(first, Some(20));
+        // The view is clamped at top 15. From the first visible row this would
+        // pick 20 again; from the row navigated to it moves on.
+        assert_eq!(nav_target(&files, false, 15, 10, first, true), Some(23));
+        // Past the last file there is nowhere to go.
+        assert_eq!(nav_target(&files, false, 15, 10, Some(23), true), None);
+        // And back up.
+        assert_eq!(nav_target(&files, false, 15, 10, Some(23), false), Some(20));
+    }
+    #[test]
+    fn ignores_a_navigation_row_the_user_scrolled_away_from() {
+        let files = [0, 9, 20, 40];
+        // Last navigated to 9, but the view is now around row 30.
+        assert_eq!(nav_target(&files, false, 30, 10, Some(9), true), Some(40));
+        assert_eq!(nav_target(&files, false, 30, 10, Some(9), false), Some(20));
+    }
+    #[test]
+    fn steps_hunks_from_the_last_hunk_reached() {
+        let hunks = [1, 5, 10, 12];
+        // Landed on the hunk at 10 (scrolled to row 9); the next is 12, not 10 again.
+        assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), true), Some(11));
+        assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), false), Some(4));
+    }
+    #[test]
+    fn suggestion_takes_the_new_side_of_the_selection() {
+        let d = sample();
+        // Rows 2-4 are "-x", "+y", " k".
+        assert_eq!(new_side_lines(&d, (2, 4)), vec!["y", "k"]);
+        assert_eq!(new_side_lines(&d, (3, 3)), vec!["y"]);
+        // A removed line alone has nothing to suggest.
+        assert!(new_side_lines(&d, (2, 2)).is_empty());
+    }
+    #[test]
+    fn suggestion_block_is_fenced() {
+        assert_eq!(suggestion_block(&["a".into(), "b".into()]), "```suggestion\na\nb\n```\n");
+        // Code that holds a fence gets a longer one.
+        assert!(suggestion_block(&["```".into()]).starts_with("````suggestion"));
     }
 }

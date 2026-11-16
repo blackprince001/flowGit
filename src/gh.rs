@@ -8,6 +8,7 @@ mod issues;
 mod local;
 mod notifications;
 mod search;
+mod viewed;
 pub use compare::*;
 pub use files::*;
 pub use inbox::*;
@@ -15,6 +16,7 @@ pub use issues::*;
 pub use local::*;
 pub use notifications::*;
 pub use search::*;
+pub use viewed::*;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine;

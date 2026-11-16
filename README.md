@@ -15,6 +15,7 @@ Run `cargo run` for dev run. To install on your Mac, `./scripts/install-app.sh`
 - ⌘K opens the command palette, ⌘P finds a file, ⇧⌘F searches code in the repository. Inbox, My PRs, Assigned and Notifications are pinned at the front of the tab strip (⌘0 jumps back to them).
 - ⌘1 to ⌘7 switch views. Changes (⌘7) only shows for local clones.
 - In a diff, j/k move between files and n/p between hunks.
+- On a pull request: ⇧⌘A approves, ⇧⌘M opens the merge confirmation, ⇧⌘C checks it out (local clones only). These don't fire while you're typing in a box.
 
 ## Using it from Claude Code
 

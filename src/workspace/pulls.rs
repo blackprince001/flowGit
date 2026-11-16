@@ -12,12 +12,16 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui_component::{
     Disableable,
-    IconName, Sizable,
+    Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     input::Input,
     resizable::*,
     tooltip::Tooltip,
 };
+
+// Pull request shortcuts. Bound in main.rs under `PullPage && !Input`, a context
+// the workspace sets while a pull request is open, never while typing.
+actions!(gitflow, [ApprovePull, MergePull, CheckoutPull]);
 
 const PR_ROW: f32 = 56.;
 /// Conversation layout: avatar column, gap to the text, reply geometry.
@@ -270,6 +274,101 @@ impl Workspace {
         .detach();
     }
 
+    /// Ask before merging with `method`; the merge itself runs only on the answer.
+    fn confirm_merge(&mut self, n: u64, method: MergeMethod, window: &mut Window, cx: &mut Context<Self>) {
+        let delete = settings::get(cx).delete_branch;
+        self.confirm_pr(
+            n,
+            format!("{} #{n}?", method.short()),
+            if delete {
+                "The head branch will be deleted afterwards. This can’t be undone from here.".into()
+            } else {
+                "This can’t be undone from here.".into()
+            },
+            method.short(),
+            PrAction::Merge { method, delete_branch: delete },
+            window,
+            cx,
+        );
+    }
+
+    /// The open pull request page and its loaded detail, when no menu or dialog is over it.
+    fn pull_in_view(&self) -> Option<(u64, &gh::PullDetail)> {
+        if self.popup.is_some() || self.overlay != Overlay::None {
+            return None;
+        }
+        let t = self.current()?;
+        if t.view != View::Pulls || t.new_pr.is_open() {
+            return None;
+        }
+        let n = t.pr?;
+        Some((n, self.data(&t.repo)?.pull.get(&n)?.data.as_ref()?))
+    }
+    /// Key contexts for the root: `DiffNav` over a diff, `PullPage` on a pull request.
+    pub(super) fn key_contexts(&self) -> Option<String> {
+        let free = self.overlay == Overlay::None;
+        let diff = free && self.active_diff().is_some();
+        let pull = free && self.current().is_some_and(|t| t.view == View::Pulls && t.pr.is_some() && !t.new_pr.is_open());
+        let names: Vec<&str> = [(diff, "DiffNav"), (pull, "PullPage")].into_iter().filter(|(on, _)| *on).map(|(_, n)| n).collect();
+        (!names.is_empty()).then(|| names.join(" "))
+    }
+    pub(super) fn approve_pull(&mut self, _: &ApprovePull, _: &mut Window, cx: &mut Context<Self>) {
+        // The same path as Review > Approve, which is only offered while open.
+        if let Some((n, pr)) = self.pull_in_view()
+            && pr.summary.state == "OPEN"
+        {
+            self.pr_action(n, PrAction::Approve, cx);
+        }
+    }
+    /// Opens the merge confirmation with the default method; never merges by itself.
+    pub(super) fn merge_pull(&mut self, _: &MergePull, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((n, pr)) = self.pull_in_view() else { return };
+        if pr.summary.state != "OPEN" {
+            return;
+        }
+        if pr.summary.is_draft {
+            self.notice = Notice::warn("Mark the pull request ready for review before merging.");
+            cx.notify();
+            return;
+        }
+        let method = settings::get(cx).merge_method;
+        self.confirm_merge(n, method, window, cx);
+    }
+    pub(super) fn checkout_pull(&mut self, _: &CheckoutPull, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((n, _)) = self.pull_in_view() else { return };
+        let Some(path) = self.current().and_then(|t| self.repo(&t.repo)).and_then(|r| r.path.clone()) else {
+            self.notice = Notice::warn("Checking out needs a local clone of this repository.");
+            cx.notify();
+            return;
+        };
+        self.pr_action(n, PrAction::Checkout(path), cx);
+    }
+    /// Palette commands for the pull request on screen.
+    pub(super) fn pull_entries(&self, weak: &WeakEntity<Self>) -> Vec<Entry> {
+        let Some((_, pr)) = self.pull_in_view() else { return vec![] };
+        let open = pr.summary.state == "OPEN";
+        let local = self.current().is_some_and(|t| self.is_local(&t.repo));
+        let item = |title: &'static str, keys: &'static str, glyph: Icon, run: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| {
+            let w = weak.clone();
+            Entry::Item(Item::new(title).icon(glyph).detail(keys).on_click(move |win, cx| {
+                // After the menu closes, so the merge dialog and focus changes win.
+                let w = w.clone();
+                win.defer(cx, move |win, cx| {
+                    let _ = w.update(cx, |s, cx| run(s, win, cx));
+                });
+            }))
+        };
+        let mut out = vec![];
+        if open {
+            out.push(item("Approve pull request", "⇧⌘A", IconName::CircleCheck.into(), |s, w, cx| s.approve_pull(&ApprovePull, w, cx)));
+            out.push(item("Merge pull request…", "⇧⌘M", Glyph::Merge.into(), |s, w, cx| s.merge_pull(&MergePull, w, cx)));
+        }
+        if local {
+            out.push(item("Check out pull request locally", "⇧⌘C", Glyph::Branch.into(), |s, w, cx| s.checkout_pull(&CheckoutPull, w, cx)));
+        }
+        out
+    }
+
     fn pull_page(&self, n: u64, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let mono = settings::mono(cx);
@@ -324,6 +423,7 @@ impl Workspace {
                 .small()
                 .dropdown_caret(true)
                 .loading(self.busy_with("Merging"))
+                .tooltip("Merge · ⇧⌘M")
                 .disabled(busy || !open || p.is_draft),
             None,
             280.,
@@ -337,22 +437,7 @@ impl Workspace {
                             .icon(Glyph::Merge)
                             .checked(m == prefs.merge_method)
                             .on_click(move |w, cx| {
-                                let _ = weak.update(cx, |s, cx| {
-                                    let delete = settings::get(cx).delete_branch;
-                                    s.confirm_pr(
-                                        n,
-                                        format!("{} #{n}?", m.short()),
-                                        if delete {
-                                            "The head branch will be deleted afterwards. This can’t be undone from here.".into()
-                                        } else {
-                                            "This can’t be undone from here.".into()
-                                        },
-                                        m.short(),
-                                        PrAction::Merge { method: m, delete_branch: delete },
-                                        w,
-                                        cx,
-                                    )
-                                });
+                                let _ = weak.update(cx, |s, cx| s.confirm_merge(n, m, w, cx));
                             }),
                     ));
                 }
@@ -378,6 +463,7 @@ impl Workspace {
                 .outline()
                 .small()
                 .dropdown_caret(true)
+                .tooltip("Review · approve with ⇧⌘A")
                 .disabled(busy || !open),
             None,
             300.,
@@ -399,7 +485,7 @@ impl Workspace {
                             }),
                     ),
                     Entry::Separator,
-                    Entry::Item(Item::new("Approve").icon(IconName::CircleCheck).on_click(move |_, cx| {
+                    Entry::Item(Item::new("Approve").icon(IconName::CircleCheck).detail("⇧⌘A").on_click(move |_, cx| {
                         let _ = a.update(cx, |s, cx| s.pr_action(n, PrAction::Approve, cx));
                     })),
                     Entry::Item(
@@ -432,7 +518,7 @@ impl Workspace {
                 let mut out = vec![];
                 if let Some(path) = local.clone() {
                     let w = weak.clone();
-                    out.push(Entry::Item(Item::new("Check out locally").icon(Glyph::Branch).detail("gh pr checkout").on_click(move |_, cx| {
+                    out.push(Entry::Item(Item::new("Check out locally").icon(Glyph::Branch).detail("⇧⌘C").on_click(move |_, cx| {
                         let path = path.clone();
                         let _ = w.update(cx, |s, cx| s.pr_action(n, PrAction::Checkout(path), cx));
                     })));
@@ -551,6 +637,13 @@ impl Workspace {
             (PrPage::Checks, format!("Checks  {}", p.status_check_rollup.len())),
             (PrPage::Files, format!("Files changed  {}", pr.changed_files)),
         ];
+        let viewed_summary = (t.pr_page == PrPage::Files)
+            .then(|| {
+                let v = self.data(&t.repo)?.viewed.get(&n)?.data.as_ref()?;
+                let (done, total) = v.counts();
+                Some(format!("{done} of {total} viewed"))
+            })
+            .flatten();
         let pending = self.drafts.count(&t.repo, n);
         let pending_bar = (pending > 0).then(|| self.pending_bar(pending, cx));
         let sub = row()
@@ -568,6 +661,7 @@ impl Workspace {
             .when_some(rollup, |s, r| s.child(check_icon(colors, r)))
             .children(pending_bar)
             .child(div().flex_1())
+            .when_some(viewed_summary, |s, text| s.child(label(colors, text)))
             .child(super::diff::counts(colors, p.additions as u32, p.deletions as u32));
         let body = match t.pr_page {
             PrPage::Conversation => self.conversation(pr, window, cx),
@@ -576,7 +670,9 @@ impl Workspace {
             PrPage::Files => {
                 let l = self.data(&t.repo).and_then(|d| d.pull_diff.get(&n));
                 match (l.and_then(|l| l.data.clone()), l.and_then(|l| l.error.clone())) {
-                    (Some(diff), _) => h_resizable(SharedString::from(format!("pr-files-{}", t.id)))
+                    (Some(full), _) => {
+                        let (diff, viewed) = self.shown_pr_diff(t, n, &full);
+                        h_resizable(SharedString::from(format!("pr-files-{}", t.id)))
                         .child(
                             resizable_panel()
                                 .size(px(260.))
@@ -591,13 +687,14 @@ impl Workspace {
                                         ("pr-diff", t.id),
                                         diff,
                                         t.diff_scroll.clone(),
-                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n))),
+                                        Some(super::diff::Review::new(&pr.threads, t.line_target.as_ref().map(|_| t.line_rows)).with_drafts(self.drafts.per_line(&t.repo, n)).with_viewed(viewed)),
                                         cx,
                                     )))
                                     .when_some(t.line_target.clone(), |c, target| c.child(self.line_panel(n, pr, target, window, cx))),
                             ),
                         )
-                        .into_any_element(),
+                        .into_any_element()
+                    }
                     (None, Some(e)) => failed(colors, &e).into_any_element(),
                     _ => loading(colors, "Loading diff…").into_any_element(),
                 }
@@ -709,6 +806,16 @@ impl Workspace {
                     .gap_2()
                     .child(label(colors, if replying { "Markdown · ⌘ Return to send" } else { "Markdown · ⌘ Return to send · ⇧-click a line for a range" }))
                     .child(div().flex_1())
+                    .child(
+                        Button::new("insert-suggestion")
+                            .label("Insert suggestion")
+                            .icon(Glyph::FileDiff)
+                            .ghost()
+                            .small()
+                            .disabled(!target.right)
+                            .tooltip(if target.right { "Suggest a replacement for the selected lines" } else { "Suggestions go on added or unchanged lines" })
+                            .on_click(cx.listener(|s, _, w, cx| s.insert_suggestion(w, cx))),
+                    )
                     .child(Button::new("cancel-line-comment").label("Cancel").ghost().small().on_click(cx.listener(|s, _, _, cx| {
                         if let Some(t) = s.current_mut() {
                             t.line_target = None;
@@ -1007,45 +1114,7 @@ impl Workspace {
             );
         items.push((i64::MAX, self.avatar(me.as_deref(), "you", AVATAR, cx), composer));
 
-        // The rail: each item's avatar column carries the line down to the next.
-        let last = items.len() - 1;
-        let mut thread = col();
-        for (i, (_, avatar, content)) in items.into_iter().enumerate() {
-            thread = thread.child(
-                div()
-                    .relative()
-                    .flex()
-                    .w_full()
-                    // Absolute so it spans the item's full height, through to the next avatar.
-                    .when(i < last, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(px(AVATAR / 2. - 1.))
-                                .top(px(AVATAR))
-                                .bottom_0()
-                                .w(px(2.))
-                                .bg(rgb(rail_color(colors))),
-                        )
-                    })
-                    .child(col().w(px(AVATAR)).flex_shrink_0().items_center().child(avatar))
-                    .child(
-                        content
-                            .flex_1()
-                            .min_w_0()
-                            .pl(px(RAIL_INSET - AVATAR))
-                            .pt(px(7.))
-                            .pb(px(if i < last { 26. } else { 0. })),
-                    ),
-            );
-        }
-        div()
-            .id(("conversation", t.id))
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&t.page_scroll)
-            .child(col().p_4().max_w(px(900.)).w_full().mx_auto().child(thread))
-            .into_any_element()
+        self.timeline("conversation", items.into_iter().map(|(_, avatar, content)| (avatar, content)).collect(), cx)
     }
     fn pr_commits(&self, pr: &gh::PullDetail, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);

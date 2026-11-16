@@ -46,6 +46,8 @@ pub enum NewPr {
         page: ComparePage,
         /// The title and body were filled from this pair of branches.
         prefilled: bool,
+        /// Logins to ask for review.
+        reviewers: Vec<String>,
     },
 }
 impl NewPr {
@@ -56,6 +58,7 @@ impl NewPr {
             draft: false,
             page: ComparePage::Commits,
             prefilled: false,
+            reviewers: vec![],
         }
     }
     pub fn is_open(&self) -> bool {
@@ -91,6 +94,23 @@ impl NewPr {
     pub fn set_draft(&mut self, on: bool) {
         if let Self::Open { draft, .. } = self {
             *draft = on;
+        }
+    }
+    /// Ask for a review from `login`, or stop asking.
+    pub fn toggle_reviewer(&mut self, login: &str) {
+        if let Self::Open { reviewers, .. } = self {
+            match reviewers.iter().position(|r| r == login) {
+                Some(i) => {
+                    reviewers.remove(i);
+                }
+                None => reviewers.push(login.to_string()),
+            }
+        }
+    }
+    pub fn reviewers(&self) -> &[String] {
+        match self {
+            Self::Open { reviewers, .. } => reviewers,
+            Self::Closed => &[],
         }
     }
     pub fn set_page(&mut self, to: ComparePage) {
@@ -141,6 +161,8 @@ impl Workspace {
         let range = t.new_pr.range().map(|(b, h)| (b.to_string(), h.to_string()));
         let s = slug.to_string();
         self.fetch(key, |d| &mut d.branches, force, move || gh::branches(&s), cx);
+        let s = slug.to_string();
+        self.fetch(key, |d| &mut d.reviewers, false, move || gh::reviewer_candidates(&s), cx);
         let Some((base, head)) = range else { return };
         let (s, b, h) = (slug.to_string(), base.clone(), head.clone());
         let k = (base.clone(), head.clone());
@@ -179,8 +201,8 @@ impl Workspace {
     pub(super) fn create_pull(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.current() else { return };
         let Some(repo) = self.repo(&t.repo).cloned() else { return };
-        let NewPr::Open { base, head: Some(head), draft, .. } = &t.new_pr else { return };
-        let (base, head, draft) = (base.clone(), head.clone(), *draft);
+        let NewPr::Open { base, head: Some(head), draft, reviewers, .. } = &t.new_pr else { return };
+        let (base, head, draft, reviewers) = (base.clone(), head.clone(), *draft, reviewers.clone());
         let title = t.pr_title.read(cx).value().trim().to_string();
         let body = t.pr_body.read(cx).value().to_string();
         if title.is_empty() {
@@ -196,7 +218,7 @@ impl Workspace {
             label,
             Report::Notice,
             move || {
-                let n = gh::create_pr(&slug, &base, &head, &title, &body, draft)?;
+                let n = gh::create_pr(&slug, &base, &head, &title, &body, draft, &reviewers)?;
                 sent.store(n, Ordering::SeqCst);
                 Ok(format!("Created #{n}"))
             },
@@ -218,6 +240,52 @@ impl Workspace {
             },
             cx,
         );
+    }
+
+    /// A menu of people to ask for review; each click adds or removes one.
+    fn reviewer_picker(&self, cx: &mut Context<Self>) -> Div {
+        let colors = palette(cx);
+        let chosen = self.current().map(|t| t.new_pr.reviewers().len()).unwrap_or(0);
+        self.popover_button(
+            "compare-reviewers",
+            button("compare-reviewers-trigger", if chosen == 0 { "Reviewers".to_string() } else { format!("Reviewers · {chosen}") })
+                .icon(icon(Glyph::ListChecks).text_color(rgb(colors.muted)))
+                .dropdown_caret(true)
+                .tooltip("Ask people to review this pull request"),
+            Some("Find a person…"),
+            280.,
+            move |s, weak, _| {
+                let Some(t) = s.current() else { return vec![] };
+                let l = s.data(&t.repo).map(|d| &d.reviewers);
+                let Some(people) = l.and_then(|l| l.data.as_ref()) else {
+                    let text = if l.and_then(|l| l.error.as_ref()).is_some() { "Could not load people" } else { "Loading people…" };
+                    return vec![Entry::Item(Item::new(text).disabled(true))];
+                };
+                // GitHub won't take the author as their own reviewer.
+                let me = s.user.data.as_ref().map(|u| u.login.as_str());
+                let picked = t.new_pr.reviewers();
+                let mut out = vec![Entry::Label(format!("People · {}", people.len()).into())];
+                for login in people.iter().filter(|p| Some(p.as_str()) != me) {
+                    let (weak, name) = (weak.clone(), login.clone());
+                    out.push(Entry::Item(
+                        Item::new(login.clone())
+                            .checked(picked.contains(login))
+                            .keep_open()
+                            .on_click(move |_, cx| {
+                                let name = name.clone();
+                                let _ = weak.update(cx, |s, cx| {
+                                    if let Some(t) = s.current_mut() {
+                                        t.new_pr.toggle_reviewer(&name);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    ));
+                }
+                out
+            },
+            cx,
+        )
     }
 
     fn branch_picker(&self, side: Side, current: Option<String>, cx: &mut Context<Self>) -> Div {
@@ -334,6 +402,8 @@ impl Workspace {
             .child(self.branch_picker(Side::Base, Some(base), cx))
             .child(label(colors, "from"))
             .child(self.branch_picker(Side::Head, head.clone(), cx))
+            .child(div().text_color(rgb(colors.quiet)).child("•"))
+            .child(self.reviewer_picker(cx))
             .when_some(stats, |s, text| s.child(div().text_color(rgb(colors.quiet)).child("•")).child(label(colors, text)))
             .child(div().flex_1())
             .child(
@@ -510,6 +580,19 @@ mod tests {
         n.mark_prefilled();
         n.pick(Side::Base, "dev".into());
         assert_eq!(n.needs_prefill(), Some(("dev", "b")));
+    }
+    #[test]
+    fn reviewers_toggle_and_survive_branch_changes() {
+        let mut n = open();
+        n.toggle_reviewer("ada");
+        n.toggle_reviewer("bob");
+        n.toggle_reviewer("ada");
+        assert_eq!(n.reviewers(), ["bob".to_string()]);
+        n.pick(Side::Head, "x".into());
+        assert_eq!(n.reviewers(), ["bob".to_string()]);
+        let mut closed = NewPr::Closed;
+        closed.toggle_reviewer("ada");
+        assert!(closed.reviewers().is_empty());
     }
     #[test]
     fn closed_ignores_events() {

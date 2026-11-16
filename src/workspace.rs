@@ -34,10 +34,14 @@ mod pulls;
 mod releases;
 mod review;
 mod search;
+mod timeline;
+mod viewed;
 mod ui;
 
 pub use compare::NewPullRequest;
 pub use diff::{NextFile, NextHunk, PreviousFile, PreviousHunk};
+use diff::NavPos;
+pub use pulls::{ApprovePull, CheckoutPull, MergePull};
 pub use review::FinishReview;
 pub use search::SearchCode;
 
@@ -111,10 +115,11 @@ pub enum BlobView {
 }
 /// A diff flattened for a virtualized list: file headers, then numbered lines.
 pub struct DiffView {
-    pub files: Vec<gh::FileDiff>,
+    /// Shared, so a view with some files collapsed (`collapsed`) costs only its rows.
+    pub files: Arc<Vec<gh::FileDiff>>,
     /// Each file's shown lines, tabs expanded, and their syntax colours.
-    pub text: Vec<Vec<SharedString>>,
-    pub highlights: Vec<Option<syntax::Highlights>>,
+    pub text: Arc<Vec<Vec<SharedString>>>,
+    pub highlights: Arc<Vec<Option<syntax::Highlights>>>,
     pub rows: Vec<(usize, Option<usize>)>,
     pub additions: u32,
     pub deletions: u32,
@@ -137,12 +142,24 @@ impl DiffView {
             .map(|(f, t)| if f.binary { None } else { syntax::highlight_diff(&f.path, &f.lines[..t.len()], t) })
             .collect();
         Self {
-            text,
-            highlights,
+            text: Arc::new(text),
+            highlights: Arc::new(highlights),
             additions: files.iter().map(|f| f.additions).sum(),
             deletions: files.iter().map(|f| f.deletions).sum(),
-            files,
+            files: Arc::new(files),
             rows,
+        }
+    }
+    /// The same diff with the lines of the files for which `hide` is true left
+    /// out, so only their headers remain.
+    pub fn collapsed(&self, hide: impl Fn(usize) -> bool) -> Self {
+        Self {
+            files: self.files.clone(),
+            text: self.text.clone(),
+            highlights: self.highlights.clone(),
+            rows: self.rows.iter().copied().filter(|&(f, line)| line.is_none() || !hide(f)).collect(),
+            additions: self.additions,
+            deletions: self.deletions,
         }
     }
     pub fn header_row(&self, file: usize) -> Option<usize> {
@@ -165,6 +182,8 @@ pub struct RepoData {
     pub info: Load<gh::RepoInfo>,
     pub branches: Load<Vec<gh::Branch>>,
     pub contributors: Load<Vec<gh::Contributor>>,
+    /// People a new pull request can ask for review.
+    pub reviewers: Load<Vec<String>>,
     pub activity: Load<Arc<gh::Activity>>,
     pub origin: Load<String>,
     /// Queued or running workflow runs, polled for every repository.
@@ -177,6 +196,8 @@ pub struct RepoData {
     pub pulls: HashMap<PrFilter, Load<Vec<gh::Pull>>>,
     pub pull: HashMap<u64, Load<gh::PullDetail>>,
     pub pull_diff: HashMap<u64, Load<Arc<DiffView>>>,
+    /// Which of a pull request's files the viewer has marked as viewed.
+    pub viewed: HashMap<u64, Load<gh::ViewedFiles>>,
     /// The compare page's commits and diff, per (base, head).
     pub compare: HashMap<(String, String), Load<Arc<gh::Compare>>>,
     pub compare_diff: HashMap<(String, String), Load<Arc<DiffView>>>,
@@ -336,6 +357,8 @@ pub struct Tab {
     pub pr_title: Entity<InputState>,
     pub pr_body: Entity<InputState>,
     pub composer: Entity<InputState>,
+    /// The issue page's comment box, separate from the pull request's.
+    pub issue_composer: Entity<InputState>,
     pub commit_message: Entity<InputState>,
     /// The pull request diff line being commented on, and its comment box.
     pub line_target: Option<LineTarget>,
@@ -347,6 +370,10 @@ pub struct Tab {
     pub line_composer: Entity<InputState>,
     pub list_scroll: UniformListScrollHandle,
     pub diff_scroll: UniformListScrollHandle,
+    /// The diff row j/k/n/p last scrolled to; steps start there while it is on screen.
+    pub diff_nav: Option<NavPos>,
+    /// Viewed files of a pull request (number, path) the reader reopened.
+    pub viewed_open: std::collections::HashSet<(u64, String)>,
     pub log_scroll: UniformListScrollHandle,
     pub page_scroll: ScrollHandle,
     pub release_list: ListState,
@@ -439,6 +466,8 @@ pub struct Workspace {
     busy: Option<String>,
     /// Clear this tab's comment box on the next frame (needs a window).
     pending_clear: Option<u64>,
+    /// Likewise for a tab's issue comment box.
+    pending_issue_clear: Option<u64>,
     /// Likewise for a tab's line comment box.
     pending_line_clear: Option<u64>,
     /// The Home screen's inbox and notifications. Not per repository.
@@ -538,6 +567,7 @@ impl Workspace {
             pending_line_clear: None,
             pending_commit_clear: None,
             pending_clear: None,
+            pending_issue_clear: None,
             home: home::HomeData::default(),
             home_page: home::HomePage::default(),
             seen: home::Seen::default(),
@@ -624,6 +654,12 @@ impl Workspace {
                 .auto_grow(3, 12)
                 .placeholder("Leave a comment · Markdown supported")
         });
+        let issue_composer = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 12)
+                .placeholder("Leave a comment · Markdown supported")
+        });
         let pr_title = input("", "Title", window, cx);
         let pr_body = cx.new(|cx| {
             InputState::new(window, cx)
@@ -685,6 +721,7 @@ impl Workspace {
             pr_title,
             pr_body,
             composer,
+            issue_composer,
             commit_message,
             line_target: None,
             line_start: None,
@@ -693,6 +730,8 @@ impl Workspace {
             line_composer,
             list_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
+            diff_nav: None,
+            viewed_open: Default::default(),
             log_scroll: UniformListScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             release_list: ListState::new(0, ListAlignment::Top, px(600.)),
@@ -902,6 +941,7 @@ impl Workspace {
             trim(&mut d.issue, 30);
             trim(&mut d.pull, 30);
             trim(&mut d.pull_diff, 10);
+            trim(&mut d.viewed, 10);
             trim(&mut d.compare, 10);
             trim(&mut d.compare_diff, 5);
             trim(&mut d.commit, 30);
@@ -1098,6 +1138,8 @@ impl Workspace {
                             move || Ok(Arc::new(DiffView::new(gh::pull_diff(&s, n)?))),
                             cx,
                         );
+                        let s = slug.clone();
+                        self.fetch(&key, move |d| d.viewed.entry(n).or_default(), force, move || gh::viewed_files(&s, n), cx);
                     }
                 }
                 self.ensure_compare(&key, &slug, force, cx);
@@ -1757,7 +1799,7 @@ if matches!(s.overlay, Overlay::AddUrl { .. }) {
             return;
         }
         if let (View::Issues, Some(n)) = (t.view, t.issue) {
-            let body = t.composer.read(cx).value().trim().to_string();
+            let body = t.issue_composer.read(cx).value().trim().to_string();
             if !body.is_empty() {
                 self.issue_action(n, gh::IssueAction::Comment(body), cx);
             }
