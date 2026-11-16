@@ -742,7 +742,7 @@ impl Workspace {
                         .child(div().text_color(rgb(colors.text)).child(util::compact(n)))
                         .child(what)
                 };
-                let open_issues = info.open_issues.map(|n| {
+                let open_issues = Some(info.issues.total_count).map(|n| {
                     let show_open = cx.listener(|s, _, _, cx| {
                         if let Some(t) = s.current_mut() {
                             t.issue_filter = IssueFilter::Open;
