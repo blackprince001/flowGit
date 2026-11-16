@@ -51,7 +51,9 @@ actions!(
         ShowReleases,
         Submit,
         Back,
-        Quit
+        Quit,
+        CommandPalette,
+        FindFile
     ]
 );
 
@@ -168,6 +170,8 @@ pub struct RepoData {
     pub blame: HashMap<(String, String), Load<Arc<gh::Blame>>>,
     pub jobs: HashMap<u64, Load<Vec<gh::Job>>>,
     pub log: HashMap<u64, Load<Arc<LogView>>>,
+    /// Every file path, per branch, for the file finder.
+    pub files: HashMap<String, Load<Arc<Vec<String>>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]

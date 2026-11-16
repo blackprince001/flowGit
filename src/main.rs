@@ -39,6 +39,9 @@ fn main() {
             KeyBinding::new("cmd-enter", Submit, None),
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-k", CommandPalette, None),
+            KeyBinding::new("cmd-shift-p", CommandPalette, None),
+            KeyBinding::new("cmd-p", FindFile, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus(vec![

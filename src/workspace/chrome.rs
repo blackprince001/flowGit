@@ -1405,6 +1405,8 @@ impl Render for Workspace {
             .text_size(px(13.))
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::find_file))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_brief))
             .on_action(cx.listener(Self::close_tab))

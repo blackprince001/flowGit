@@ -79,6 +79,39 @@ pub enum Entry {
 
 pub type Builder = Rc<dyn Fn(&App) -> Vec<Entry>>;
 
+/// Matches drawn while searching; long lists (every file in a repo) stay quick.
+const MAX_RESULTS: usize = 200;
+/// Rows drawn before anything is typed.
+const MAX_UNFILTERED: usize = 1000;
+
+/// How well `query` matches `text`, or None when it doesn't. Every
+/// whitespace-separated word of the query must appear in order as a
+/// subsequence; runs, word starts and an exact substring score higher.
+pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
+    let text = text.to_lowercase();
+    let chars: Vec<char> = text.chars().collect();
+    let mut total = 0;
+    for word in query.split_whitespace() {
+        let word = word.to_lowercase();
+        let mut score = 0;
+        let mut at = 0;
+        let mut prev: Option<usize> = None;
+        for q in word.chars() {
+            let found = (at..chars.len()).find(|&i| chars[i] == q)?;
+            let boundary = found == 0 || matches!(chars[found - 1], '/' | '_' | '-' | ' ' | '.' | '#');
+            score += 1 + if boundary { 8 } else { 0 } + if prev == Some(found.wrapping_sub(1)) { 5 } else { 0 };
+            prev = Some(found);
+            at = found + 1;
+        }
+        if text.contains(&word) {
+            score += 20;
+        }
+        total += score;
+    }
+    // Among equal matches, prefer shorter text.
+    Some(total * 100 - chars.len().min(99) as i32)
+}
+
 pub struct Menu {
     focus: FocusHandle,
     search: Option<Entity<InputState>>,
@@ -140,20 +173,21 @@ impl Menu {
             .map(|s| s.read(cx).value().trim().to_lowercase())
             .unwrap_or_default();
         if query.is_empty() {
-            return entries;
+            return entries.into_iter().take(MAX_UNFILTERED).collect();
         }
-        entries
+        let mut scored: Vec<(i32, Entry)> = entries
             .into_iter()
-            .filter(|e| match e {
-                Entry::Item(i) => {
-                    i.label.to_lowercase().contains(&query)
-                        || i.detail
-                            .as_ref()
-                            .is_some_and(|d| d.to_lowercase().contains(&query))
-                }
-                _ => false,
+            .filter_map(|e| {
+                let Entry::Item(i) = &e else { return None };
+                let label = fuzzy_score(&query, &i.label);
+                // A detail match (a path, a shortcut) counts, but less than the label.
+                let detail = i.detail.as_ref().and_then(|d| fuzzy_score(&query, d)).map(|d| d - 20);
+                label.max(detail).map(|score| (score, e))
             })
-            .collect()
+            .collect();
+        // Stable, so equal scores keep the builder's order.
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().take(MAX_RESULTS).map(|(_, e)| e).collect()
     }
     fn selectable(entries: &[Entry]) -> Vec<usize> {
         entries
@@ -364,5 +398,28 @@ impl Render for Menu {
                 )
             })
             .child(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuzzy_score;
+
+    #[test]
+    fn matches_subsequences_and_rejects_the_rest() {
+        assert!(fuzzy_score("wsrs", "src/workspace.rs").is_some());
+        assert!(fuzzy_score("zzz", "src/workspace.rs").is_none());
+        assert!(fuzzy_score("pulls rs", "src/workspace/pulls.rs").is_some());
+        assert!(fuzzy_score("rs pulls", "src/workspace/pulls.rs").is_some());
+    }
+
+    #[test]
+    fn ranks_word_starts_and_substrings_first() {
+        let start = fuzzy_score("pul", "src/workspace/pulls.rs").unwrap();
+        let scattered = fuzzy_score("pul", "src/plugins/util.rs").unwrap();
+        assert!(start > scattered);
+        let short = fuzzy_score("gh", "src/gh.rs").unwrap();
+        let long = fuzzy_score("gh", "src/gh/notifications.rs").unwrap();
+        assert!(short > long);
     }
 }

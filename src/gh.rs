@@ -2,11 +2,13 @@
 //! hosts and tokens and never stores a credential. Local clones add `git` for the
 //! all-branch graph, fetch and checkout. Calls block; run them off the UI thread.
 mod compare;
+mod files;
 mod inbox;
 mod issues;
 mod local;
 mod notifications;
 pub use compare::*;
+pub use files::*;
 pub use inbox::*;
 pub use issues::*;
 pub use local::*;
