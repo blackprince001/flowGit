@@ -106,12 +106,52 @@ fn reason_label(reason: &str) -> &'static str {
     }
 }
 
+/// The pinned tabs at the front of the tab strip. One shows while no
+/// repository tab is active; the last one picked is remembered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HomePage {
+    #[default]
+    Inbox,
+    Issues,
+    Notifications,
+}
+impl HomePage {
+    pub const ALL: [HomePage; 3] = [HomePage::Inbox, HomePage::Issues, HomePage::Notifications];
+    pub fn title(self) -> &'static str {
+        match self {
+            HomePage::Inbox => "Inbox",
+            HomePage::Issues => "Assigned",
+            HomePage::Notifications => "Notifications",
+        }
+    }
+    pub fn icon(self) -> Icon {
+        match self {
+            HomePage::Inbox => IconName::Inbox.into(),
+            HomePage::Issues => Glyph::CircleDot.into(),
+            HomePage::Notifications => IconName::Bell.into(),
+        }
+    }
+}
+
 impl Workspace {
-    /// Leave the open tab (it stays open) and show Home.
+    /// Leave the open tab (it stays open) and show the last Home page.
     pub(super) fn show_home(&mut self, _: &ShowHome, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_home_page(self.home_page, window, cx);
+    }
+    pub(super) fn show_home_page(&mut self, page: HomePage, window: &mut Window, cx: &mut Context<Self>) {
         self.active = None;
+        self.home_page = page;
         self.focus.focus(window);
         cx.notify();
+    }
+    /// What a pinned tab's badge counts.
+    pub(super) fn home_count(&self, page: HomePage) -> usize {
+        let len = |l: &Load<Vec<InboxItem>>| l.data.as_ref().map_or(0, Vec::len);
+        match page {
+            HomePage::Inbox => len(&self.home.review_requests),
+            HomePage::Issues => len(&self.home.assigned_issues),
+            HomePage::Notifications => self.unread_count(),
+        }
     }
     pub(super) fn unread_count(&self) -> usize {
         self.home.notifications.data.as_ref().map_or(0, Vec::len)
@@ -198,10 +238,11 @@ impl Workspace {
             cx,
         );
     }
-    /// The periodic check, from `tick`.
+    /// The periodic check, from `tick`. It covers the inbox and assigned
+    /// issues too, so the pinned tabs' counts stay current from launch.
     pub(super) fn poll_notifications(&mut self, cx: &mut Context<Self>) {
         self.last_notif_poll = Some(Instant::now());
-        self.fetch_notifications(true, cx);
+        self.ensure_home(true, cx);
     }
     /// A live poll finished: alert about what is new since the one before.
     fn observe_notifications(&mut self, list: &[Notification], cx: &mut Context<Self>) {
@@ -291,15 +332,16 @@ impl Workspace {
             .gap_2()
             .border_b_1()
             .border_color(rgb(colors.row_border))
-            .child(icon(IconName::Inbox).text_color(rgb(colors.blue)))
-            .child(div().font_weight(FontWeight::MEDIUM).child("Home"));
+            .child(icon(self.home_page.icon()).text_color(rgb(colors.blue)))
+            .child(div().font_weight(FontWeight::MEDIUM).child(self.home_page.title()));
         let no_notifications = self.home.notifications.data.as_ref().is_none_or(Vec::is_empty);
         let mark_all = button("mark-all-read", "Mark all as read")
             .disabled(no_notifications || self.busy.is_some())
             .on_click(cx.listener(|s, _, _, cx| s.mark_all_read(cx)))
             .into_any_element();
-        let body = col()
-            .child(self.home_section(
+        let body = match self.home_page {
+            HomePage::Inbox => col()
+                .child(self.home_section(
                 "Review requested",
                 &self.home.review_requests,
                 "Loading review requests…",
@@ -308,16 +350,7 @@ impl Workspace {
                 Self::inbox_row,
                 cx,
             ))
-            .child(self.home_section(
-                "Notifications",
-                &self.home.notifications,
-                "Loading notifications…",
-                (IconName::Inbox.into(), "No unread notifications", "You’re all caught up."),
-                Some(mark_all),
-                Self::notification_row,
-                cx,
-            ))
-            .child(self.home_section(
+                .child(self.home_section(
                 "Your pull requests",
                 &self.home.my_prs,
                 "Loading pull requests…",
@@ -325,8 +358,8 @@ impl Workspace {
                 None,
                 Self::inbox_row,
                 cx,
-            ))
-            .child(self.home_section(
+            )),
+            HomePage::Issues => col().child(self.home_section(
                 "Assigned issues",
                 &self.home.assigned_issues,
                 "Loading issues…",
@@ -334,7 +367,17 @@ impl Workspace {
                 None,
                 Self::inbox_row,
                 cx,
-            ));
+            )),
+            HomePage::Notifications => col().child(self.home_section(
+                "Notifications",
+                &self.home.notifications,
+                "Loading notifications…",
+                (IconName::Inbox.into(), "No unread notifications", "You’re all caught up."),
+                Some(mark_all),
+                Self::notification_row,
+                cx,
+            )),
+        };
         col()
             .size_full()
             .bg(rgb(colors.background))

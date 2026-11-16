@@ -425,6 +425,8 @@ pub struct Workspace {
     pending_line_clear: Option<u64>,
     /// The Home screen's inbox and notifications. Not per repository.
     home: home::HomeData,
+    /// Which pinned Home tab shows while no repository tab is active.
+    home_page: home::HomePage,
     /// Notifications already seen, so only new ones raise a desktop alert.
     seen: home::Seen,
     /// When notifications were last polled; None polls now.
@@ -519,6 +521,7 @@ impl Workspace {
             pending_commit_clear: None,
             pending_clear: None,
             home: home::HomeData::default(),
+            home_page: home::HomePage::default(),
             seen: home::Seen::default(),
             last_notif_poll: None,
             pending_review_clear: false,

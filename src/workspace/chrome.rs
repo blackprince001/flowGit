@@ -287,23 +287,6 @@ impl Workspace {
         } else if shown.is_empty() {
             list = list.child(div().p_3().text_color(rgb(colors.muted)).child("No matches"));
         }
-        let at_home = self.active.is_none();
-        let unread = self.unread_count();
-        let home = row()
-            .id("home-entry")
-            .h(px(30.))
-            .mx_1()
-            .px_2()
-            .gap_2()
-            .rounded(px(5.))
-            .cursor_pointer()
-            .when(at_home, |s| s.bg(rgb(colors.selected)))
-            .when(!at_home, |s| s.hover(|s| s.bg(rgb(colors.hover))))
-            .child(icon(IconName::Inbox).text_color(rgb(if at_home { colors.blue } else { colors.muted })))
-            .child(div().flex_1().child("Home"))
-            .when(unread > 0, |s| s.child(count_badge(colors, unread)))
-            .tooltip(|w, cx| Tooltip::new("Home · ⌘ 0").build(w, cx))
-            .on_click(cx.listener(|s, _, w, cx| s.show_home(&ShowHome, w, cx)));
         let user = self.user.data.as_ref();
         let account = match (&self.user, user) {
             (_, Some(u)) => u.login.clone(),
@@ -315,14 +298,6 @@ impl Workspace {
             .bg(rgb(colors.chrome))
             .border_r_1()
             .border_color(rgb(colors.border))
-            .child(
-                col()
-                    .flex_shrink_0()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(rgb(colors.border))
-                    .child(home),
-            )
             .child(
                 row()
                     .h(px(BAR))
@@ -426,6 +401,40 @@ impl Workspace {
     fn tabs_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let mut tabs = row().id("tabs-scroll").h_full().overflow_x_scroll();
+        // Pinned Home tabs: always there, compact, never closed.
+        for (k, page) in home::HomePage::ALL.into_iter().enumerate() {
+            let active = self.active.is_none() && self.home_page == page;
+            let count = self.home_count(page);
+            let tip = match k {
+                0 => format!("{} · ⌘ 0", page.title()),
+                _ => page.title().to_string(),
+            };
+            tabs = tabs.child(
+                row()
+                    .id(("home-tab", k))
+                    .h_full()
+                    .px_3()
+                    .gap(px(6.))
+                    .flex_shrink_0()
+                    .border_r_1()
+                    .border_color(rgb(colors.border))
+                    .cursor_pointer()
+                    .map(|s| {
+                        if active {
+                            s.bg(rgb(colors.background)).text_color(rgb(colors.text))
+                        } else {
+                            s.border_b_1()
+                                .text_color(rgb(colors.muted))
+                                .hover(|s| s.text_color(rgb(colors.text)))
+                        }
+                    })
+                    .child(icon(page.icon()).size(px(13.)).text_color(rgb(if active { colors.blue } else { colors.muted })))
+                    .child(page.title())
+                    .when(count > 0, |s| s.child(count_badge(colors, count)))
+                    .when(self.popup.is_none(), |tab| tab.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)))
+                    .on_click(cx.listener(move |s, _, w, cx| s.show_home_page(page, w, cx))),
+            );
+        }
         for (i, t) in self.tabs.iter().enumerate() {
             let active = self.active == Some(i);
             let group = SharedString::from(format!("tab-{}", t.id));

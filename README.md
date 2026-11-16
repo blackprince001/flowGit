@@ -12,7 +12,7 @@ Run `cargo run` for dev run. To install on your Mac, `./scripts/install-app.sh`
 
 ## Shortcuts worth knowing
 
-- ⌘K opens the command palette, ⌘P finds a file, ⌘0 goes Home (inbox and notifications).
+- ⌘K opens the command palette, ⌘P finds a file. Inbox, Assigned and Notifications are pinned at the front of the tab strip (⌘0 jumps back to them).
 - ⌘1 to ⌘7 switch views. Changes (⌘7) only shows for local clones.
 - In a diff, j/k move between files and n/p between hunks.
 
