@@ -74,6 +74,7 @@ pub fn cacheable(args: &[&str]) -> bool {
         ["pr" | "run" | "repo" | "workflow" | "release" | "issue", verb, ..] => {
             matches!(*verb, "view" | "list" | "diff" | "checks")
         }
+        ["search", ..] => true,
         _ => false,
     }
 }
@@ -201,6 +202,7 @@ mod tests {
         assert!(!cacheable(&["api", "-X", "POST", "repos/a/b/pulls/1/comments", "--input", "-"]));
         assert!(!cacheable(&["api", "graphql", "-f", "query=mutation { x }"]));
         assert!(!cacheable(&["api", "repos/a/b/issues", "-f", "title=x"]));
+        assert!(cacheable(&["search", "prs", "--review-requested=@me", "--json", "number"]));
         assert!(!cacheable(&["pr", "merge", "1", "--squash"]));
         assert!(!cacheable(&["run", "rerun", "1"]));
         assert!(!cacheable(&["workflow", "run", "1", "--ref", "main"]));
