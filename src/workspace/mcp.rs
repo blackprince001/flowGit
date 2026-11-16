@@ -117,6 +117,7 @@ impl Workspace {
                     });
                 }
             }
+            View::Changes => v["change"] = json!(t.change.as_ref().map(|c| &c.path)),
             View::Actions => {
                 v["run"] = json!(t.run);
                 v["job"] = json!(t.job);
@@ -224,6 +225,9 @@ impl Workspace {
             ),
             None => None,
         };
+        if view.is_some_and(|v| !v.available(self.is_local(&key))) {
+            return Err(format!("{} has no local clone in Gitflow, so it has no Changes view.", a.repo));
+        }
         self.open_repo(&key, window, cx);
         if let Some(view) = view {
             self.set_view(view, cx);

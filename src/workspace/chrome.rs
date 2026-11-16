@@ -25,6 +25,7 @@ pub fn view_glyph(view: View) -> Icon {
         View::Pulls => Glyph::PullRequest.into(),
         View::Actions => Glyph::CirclePlay.into(),
         View::Releases => Glyph::Tag.into(),
+        View::Changes => Glyph::FileDiff.into(),
     }
 }
 
@@ -596,8 +597,9 @@ impl Workspace {
             .and_then(|l| l.data.as_ref())
             .map(|r| r.iter().filter(|r| r.active()).count())
             .unwrap_or(0);
+        let local = self.is_local(&t.repo);
         let mut nav = row().h_full().gap(px(2.));
-        for (i, view) in View::ALL.into_iter().enumerate() {
+        for (i, view) in View::ALL.into_iter().filter(|v| v.available(local)).enumerate() {
             let active = t.view == view;
             let badge: Option<AnyElement> = match view {
                 View::Pulls => info
@@ -615,6 +617,11 @@ impl Workspace {
                     .and_then(|d| d.releases.data.as_ref())
                     .filter(|r| !r.is_empty())
                     .map(|r| count_badge(colors, r.len()).into_any_element()),
+                View::Changes => data
+                    .and_then(|d| d.status.data.as_ref())
+                    .map(|st| st.count())
+                    .filter(|n| *n > 0)
+                    .map(|n| count_badge(colors, n).into_any_element()),
                 _ => None,
             };
             nav = nav.child(
@@ -668,6 +675,7 @@ impl Workspace {
                         None => "/actions".into(),
                     },
                     View::Releases => "/releases".into(),
+                    View::Changes => String::new(),
                 };
                 let full = format!("{url}{page}");
                 s.child(
@@ -1284,6 +1292,7 @@ impl Workspace {
             View::Pulls => self.pulls_view(window, cx),
             View::Actions => self.actions_view(window, cx),
             View::Releases => self.releases_view(window, cx),
+            View::Changes => self.changes_view(window, cx),
         }
     }
 }
@@ -1304,6 +1313,7 @@ impl Render for Workspace {
         if std::mem::take(&mut self.pending_review_clear) {
             self.review_body.update(cx, |s, cx| s.set_value("", window, cx));
         }
+        self.clear_committed_message(window, cx);
         let colors = palette(cx);
         let center = if self.current().is_some() {
             let view = self.content(window, cx);
@@ -1391,6 +1401,7 @@ impl Render for Workspace {
                 s.set_view(View::Releases, cx);
                 s.open_release_draft(window, cx);
             }))
+            .on_action(cx.listener(|s, _: &ShowChanges, _, cx| s.set_view(View::Changes, cx)))
             .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 if e.keystroke.key != "escape" {
                     return;

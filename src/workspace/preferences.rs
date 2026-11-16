@@ -157,8 +157,10 @@ impl Workspace {
             220.,
             |_, weak, cx| {
                 let current = settings::get(cx).default_view;
+                // The default must exist for every repository, remote ones included.
                 View::ALL
                     .into_iter()
+                    .filter(|v| v.available(false))
                     .map(|v| {
                         let weak = weak.clone();
                         Entry::Item(Item::new(v.title()).icon(super::chrome::view_glyph(v)).checked(v == current).on_click(move |_, cx| {
