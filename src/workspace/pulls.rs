@@ -709,6 +709,16 @@ impl Workspace {
                     .gap_2()
                     .child(label(colors, if replying { "Markdown · ⌘ Return to send" } else { "Markdown · ⌘ Return to send · ⇧-click a line for a range" }))
                     .child(div().flex_1())
+                    .child(
+                        Button::new("insert-suggestion")
+                            .label("Insert suggestion")
+                            .icon(Glyph::FileDiff)
+                            .ghost()
+                            .small()
+                            .disabled(!target.right)
+                            .tooltip(if target.right { "Suggest a replacement for the selected lines" } else { "Suggestions go on added or unchanged lines" })
+                            .on_click(cx.listener(|s, _, w, cx| s.insert_suggestion(w, cx))),
+                    )
                     .child(Button::new("cancel-line-comment").label("Cancel").ghost().small().on_click(cx.listener(|s, _, _, cx| {
                         if let Some(t) = s.current_mut() {
                             t.line_target = None;

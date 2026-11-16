@@ -134,6 +134,28 @@ fn thread_start(t: &gh::Thread) -> Option<LineTarget> {
         right: t.root.start_side.as_deref().or(t.root.side.as_deref()) != Some("LEFT"),
     })
 }
+/// The new-side text of the diff rows `rows.0..=rows.1`: additions and context,
+/// without the removed lines. This is what a suggestion replaces.
+pub fn new_side_lines(diff: &DiffView, rows: (usize, usize)) -> Vec<String> {
+    (rows.0..=rows.1)
+        .filter_map(|r| {
+            let (f, l) = *diff.rows.get(r)?;
+            let line = diff.files[f].lines.get(l?)?;
+            matches!(line.kind, LineKind::Add | LineKind::Context).then(|| line.text.clone())
+        })
+        .collect()
+}
+/// A fenced suggestion block holding `lines`, fenced wider than any backticks inside.
+pub fn suggestion_block(lines: &[String]) -> String {
+    let longest = lines
+        .iter()
+        .flat_map(|l| l.split(|c| c != '`').map(str::len))
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}suggestion\n{}\n{fence}\n", lines.join("\n"))
+}
+
 /// The commentable line at a diff row, if it is one.
 fn row_target(diff: &DiffView, row: usize) -> Option<LineTarget> {
     let (f, l) = *diff.rows.get(row)?;
@@ -211,6 +233,25 @@ impl Workspace {
             View::Commits => Some(data.commit.get(t.commit.as_ref()?)?.data.as_ref()?.diff.clone()),
             _ => None,
         }
+    }
+    /// Put a suggestion block with the selected lines into the line comment box.
+    pub(super) fn insert_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(diff), Some(t)) = (self.active_diff(), self.current()) else { return };
+        let lines = new_side_lines(&diff, t.line_rows);
+        if lines.is_empty() {
+            return;
+        }
+        let input = t.line_composer.clone();
+        let mut block = suggestion_block(&lines);
+        // Start on a fresh line when there is already text before the cursor.
+        let text = input.read(cx).value();
+        if !text.is_empty() && !text.ends_with('\n') {
+            block.insert(0, '\n');
+        }
+        input.update(cx, |i, cx| {
+            i.insert(block, window, cx);
+            i.focus(window, cx);
+        });
     }
     /// Scroll the diff to the next or previous file (`files`) or hunk.
     fn step_diff(&mut self, files: bool, forward: bool, cx: &mut Context<Self>) {
@@ -528,7 +569,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_rows, hunk_rows, nav_target, step};
+    use super::{file_rows, hunk_rows, nav_target, new_side_lines, step, suggestion_block};
     use crate::workspace::DiffView;
 
     fn sample() -> DiffView {
@@ -592,5 +633,20 @@ mod tests {
         // Landed on the hunk at 10 (scrolled to row 9); the next is 12, not 10 again.
         assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), true), Some(11));
         assert_eq!(nav_target(&hunks, true, 6, 10, Some(9), false), Some(4));
+    }
+    #[test]
+    fn suggestion_takes_the_new_side_of_the_selection() {
+        let d = sample();
+        // Rows 2-4 are "-x", "+y", " k".
+        assert_eq!(new_side_lines(&d, (2, 4)), vec!["y", "k"]);
+        assert_eq!(new_side_lines(&d, (3, 3)), vec!["y"]);
+        // A removed line alone has nothing to suggest.
+        assert!(new_side_lines(&d, (2, 2)).is_empty());
+    }
+    #[test]
+    fn suggestion_block_is_fenced() {
+        assert_eq!(suggestion_block(&["a".into(), "b".into()]), "```suggestion\na\nb\n```\n");
+        // Code that holds a fence gets a longer one.
+        assert!(suggestion_block(&["```".into()]).starts_with("````suggestion"));
     }
 }

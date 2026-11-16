@@ -195,6 +195,11 @@ impl Inline {
     }
 }
 
+/// Whether a fence's info string marks a GitHub suggested change.
+fn is_suggestion(lang: Option<&str>) -> bool {
+    lang.is_some_and(|l| l.split(|c: char| c == ':' || c.is_whitespace()).next() == Some("suggestion"))
+}
+
 fn inline(nodes: &[Node], cx: &Ctx) -> AnyElement {
     let mut i = Inline::default();
     i.walk(nodes, &Style::default(), cx.breaks);
@@ -482,7 +487,8 @@ fn block(node: &Node, cx: &Ctx) -> Option<AnyElement> {
         }
         Node::Code(c) => {
             let code = c.value.clone();
-            div()
+            let suggestion = is_suggestion(c.lang.as_deref());
+            let code_box = div()
                 .relative()
                 .w_full()
                 .group("code")
@@ -525,8 +531,18 @@ fn block(node: &Node, cx: &Ctx) -> Option<AnyElement> {
                         .group_hover("code", |d| d.opacity(1.))
                         .child("Copy")
                         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(code.clone()))),
-                )
-                .into_any_element()
+                );
+            // A review suggestion is the replacement for the lines commented on.
+            if suggestion {
+                col()
+                    .w_full()
+                    .gap(px(4.))
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(rgb(colors.green)).child("Suggested change"))
+                    .child(code_box)
+                    .into_any_element()
+            } else {
+                code_box.into_any_element()
+            }
         }
         Node::Blockquote(b) => col()
             .w_full()
@@ -641,6 +657,13 @@ pub fn render(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recognises_suggestion_fences() {
+        assert!(super::is_suggestion(Some("suggestion")));
+        assert!(super::is_suggestion(Some("suggestion:-0+1")));
+        assert!(!super::is_suggestion(Some("rust")));
+        assert!(!super::is_suggestion(None));
+    }
     // Not `super::*`: gpui's own `test` attribute would shadow the built-in one.
     use super::{Base, Breaks, Img, Inline, Node, Style, html_images, resolve, strip_tags};
     use crate::avatars::Source;
