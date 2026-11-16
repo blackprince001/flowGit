@@ -13,6 +13,7 @@ use gpui_component::{
     Disableable,
     IconName, Sizable,
     button::{Button, ButtonVariants},
+    input::Input,
     resizable::*,
 };
 
@@ -449,6 +450,13 @@ impl Workspace {
         let colors = palette(cx);
         let jid = j.database_id;
         let log_open = t.log_open;
+        // With the log open and loaded: the log, and the rows the filter keeps.
+        let loaded = if log_open { self.data(&t.repo).and_then(|d| d.log.get(&jid)) } else { None };
+        let query = t.log_search.read(cx).value().to_string();
+        let shown = loaded.and_then(|l| l.data.clone()).map(|log| {
+            let rows = filter_log(&log.rows, &query);
+            (log, rows)
+        });
         let header = row()
             .h(px(BAR + 4.))
             .flex_shrink_0()
@@ -460,6 +468,24 @@ impl Workspace {
             .child(div().font_weight(FontWeight::MEDIUM).truncate().child(j.name.clone()))
             .when_some(util::span(j.started_at.as_deref(), j.completed_at.as_deref()), |s, d| s.child(label(colors, d)))
             .child(div().flex_1())
+            .when_some(shown.as_ref(), |s, (log, rows)| {
+                let matches = match_count(&log.rows, rows);
+                s.child(
+                    row()
+                        .gap_2()
+                        .child(
+                            div().w(px(220.)).child(
+                                Input::new(&t.log_search)
+                                    .small()
+                                    .prefix(icon(IconName::Search).text_color(rgb(colors.muted)))
+                                    .cleanable(true),
+                            ),
+                        )
+                        .when(!query.is_empty(), |s| {
+                            s.child(label(colors, if matches == 1 { "1 match".to_string() } else { format!("{matches} matches") }))
+                        }),
+                )
+            })
             .child(crate::workspace::pulls::segmented(
                 colors,
                 "job-mode",
@@ -474,9 +500,8 @@ impl Workspace {
                 cx,
             ));
         let body = if log_open {
-            let l = self.data(&t.repo).and_then(|d| d.log.get(&jid));
-            match (l.and_then(|l| l.data.clone()), l.and_then(|l| l.error.clone())) {
-                (Some(log), _) => self.log_list(t, log, cx),
+            match (shown, loaded.and_then(|l| l.error.clone())) {
+                (Some((log, rows)), _) => self.log_list(t, log, rows, cx),
                 (None, Some(e)) => failed(colors, &e).into_any_element(),
                 _ if !j.status.eq_ignore_ascii_case("completed") => {
                     empty(colors, Glyph::Terminal, "Log available when the job finishes", "gh streams complete job logs only.").into_any_element()
@@ -507,13 +532,17 @@ impl Workspace {
         col().size_full().child(header).child(div().flex_1().min_h_0().child(body)).into_any_element()
     }
 
-    fn log_list(&self, t: &Tab, log: Arc<LogView>, cx: &mut Context<Self>) -> AnyElement {
+    /// Show the rows `shown` keeps from the log. Line numbers are the full log's.
+    fn log_list(&self, t: &Tab, log: Arc<LogView>, shown: Vec<usize>, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let mono = settings::mono(cx);
         let size = settings::get(cx).mono_size as f32;
-        let count = log.rows.len();
-        let digits = count.to_string().len() as f32;
+        let count = shown.len();
+        let digits = log.rows.len().to_string().len() as f32;
         let truncated = log.truncated;
+        if count == 0 && !log.rows.is_empty() {
+            return div().p_3().text_color(rgb(colors.muted)).child("No lines match").into_any_element();
+        }
         let list = uniform_list(
             ("log", t.id),
             count,
@@ -521,7 +550,8 @@ impl Workspace {
                 let colors = palette(cx);
                 range
                     .map(|i| {
-                        let (header, text) = &log.rows[i];
+                        let line = shown[i];
+                        let (header, text) = &log.rows[line];
                         if *header {
                             row()
                                 .h(px(LOG_ROW))
@@ -548,7 +578,7 @@ impl Workspace {
                                 .h(px(LOG_ROW))
                                 .w_full()
                                 .hover(|s| s.bg(rgb(colors.chrome)))
-                                .child(div().w(px(16. + digits * 8.)).flex_shrink_0().pr_2().text_right().text_color(rgb(colors.quiet)).child((i + 1).to_string()))
+                                .child(div().w(px(16. + digits * 8.)).flex_shrink_0().pr_2().text_right().text_color(rgb(colors.quiet)).child((line + 1).to_string()))
                                 .child(div().pl_2().whitespace_nowrap().text_color(rgb(tone)).child(text.clone()))
                         }
                     })
@@ -593,5 +623,91 @@ impl Workspace {
                     .child(list),
             )
             .into_any_element()
+    }
+}
+
+/// The rows of a log that `query` keeps, as indices into `rows`. A line is kept
+/// when it contains the query, ignoring case. A step header is kept when some
+/// line under it is. An empty query keeps everything.
+pub fn filter_log<S: AsRef<str>>(rows: &[(bool, S)], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return (0..rows.len()).collect();
+    }
+    let mut out = Vec::new();
+    let mut step = None;
+    let mut hits = Vec::new();
+    for (i, (header, text)) in rows.iter().enumerate() {
+        if *header {
+            if !hits.is_empty() {
+                out.extend(step);
+                out.append(&mut hits);
+            }
+            step = Some(i);
+        } else if text.as_ref().to_lowercase().contains(&query) {
+            hits.push(i);
+        }
+    }
+    if !hits.is_empty() {
+        out.extend(step);
+        out.append(&mut hits);
+    }
+    out
+}
+
+/// How many of the `shown` rows are log lines (step headers don't count).
+pub fn match_count<S: AsRef<str>>(rows: &[(bool, S)], shown: &[usize]) -> usize {
+    shown.iter().filter(|&&i| !rows[i].0).count()
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's glob brings in its own `test` macro.
+    use super::{filter_log, match_count};
+
+    fn log(lines: &[(bool, &'static str)]) -> Vec<(bool, &'static str)> {
+        lines.to_vec()
+    }
+
+    #[test]
+    fn empty_query_keeps_every_row() {
+        let rows = log(&[(true, "Build"), (false, "compile"), (true, "Test"), (false, "run")]);
+        assert_eq!(filter_log(&rows, ""), vec![0, 1, 2, 3]);
+        assert_eq!(filter_log(&rows, "   "), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn keeps_matching_lines_ignoring_case() {
+        let rows = log(&[(true, "Build"), (false, "Compiling"), (false, "error: E0308"), (false, "Done")]);
+        assert_eq!(filter_log(&rows, "ERROR"), vec![0, 2]);
+        assert_eq!(filter_log(&rows, "compil"), vec![0, 1]);
+    }
+
+    #[test]
+    fn drops_steps_without_a_match() {
+        let rows = log(&[
+            (true, "Build"),
+            (false, "ok"),
+            (true, "Test"),
+            (false, "failed: boom"),
+            (false, "ok"),
+            (true, "Upload"),
+            (false, "done"),
+        ]);
+        assert_eq!(filter_log(&rows, "boom"), vec![2, 3]);
+        assert_eq!(filter_log(&rows, "nothing here"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn keeps_each_step_that_matches() {
+        let rows = log(&[(true, "A"), (false, "x"), (true, "B"), (false, "x"), (false, "y")]);
+        assert_eq!(filter_log(&rows, "x"), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn counts_lines_not_headers() {
+        let rows = log(&[(true, "A"), (false, "err one"), (false, "fine"), (true, "B"), (false, "err two")]);
+        let shown = filter_log(&rows, "err");
+        assert_eq!(match_count(&rows, &shown), 2);
     }
 }
